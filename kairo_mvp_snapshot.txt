@@ -1,0 +1,2983 @@
+# Kairo Project Code Dump (v1.0 MVP)
+# Generated: 2025-07-08 18:06:02
+
+
+================================================================================
+📄 requirements.txt
+================================================================================
+
+# --- START OF FILE requirements.txt ---
+
+# --- START OF FILE requirements.txt ---
+# Web Framework & Server
+fastapi>=0.110.0,<0.112.0
+uvicorn[standard]>=0.29.0,<0.30.0
+
+# Langchain Core & OpenAI Integration
+langchain>=0.1.16,<0.2.0
+langchain-core>=0.1.40,<0.2.0
+langchain-openai>=0.1.3,<0.2.0
+
+# Google API Libraries
+google-api-python-client>=2.120.0,<3.0.0
+google-auth-oauthlib>=1.2.0,<2.0.0
+google-auth>=2.29.0,<3.0.0
+
+# Configuration & Environment
+python-dotenv>=1.0.1,<2.0.0
+PyYAML>=6.0.1,<7.0.0
+
+# Utilities
+requests>=2.31.0,<3.0.0
+pytz>=2024.1
+cryptography>=42.0.0,<43.0.0
+PyJWT>=2.8.0,<3.0.0
+
+# Pydantic (Core dependency for FastAPI & Langchain)
+pydantic>=2.7.0,<3.0.0
+
+# --- ADDED FOR SCHEDULING ---
+APScheduler>=3.10.0,<4.0.0
+# --------------------------
+instructor>=0.5.2,<1.0.0  # Or similar version specifier
+openai>=1.0.0,<2.0.0     # Instructor depends on OpenAI v1+
+# Optional: If using pandas checks (e.g., pd.isna) - uncomment if needed
+# pandas>=2.0.0,<3.0.0
+twilio>=7.0.0,<8.0.0 # For Twilio API integration
+Flask>=2.0.0,<4.0.0
+# --- END OF FILE requirements.txt ---
+
+# --- END OF FILE requirements.txt ---
+
+
+
+
+================================================================================
+📄 package.json
+================================================================================
+
+# --- START OF FILE package.json ---
+
+{
+  "dependencies": {
+    "axios": "^1.8.4",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.27.0"
+  }
+}
+
+
+# --- END OF FILE package.json ---
+
+
+
+
+================================================================================
+📄 .gitignore
+================================================================================
+
+# --- START OF FILE .gitignore ---
+
+# --- Python ---
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Compiled files
+__pycache__/
+*.pyc
+
+# Packaging
+*.egg-info/
+*.egg
+build/
+dist/
+*.manifest
+*.spec
+MANIFEST
+
+# PyInstaller logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing and coverage
+.tox/
+.nox/
+.pytest_cache/
+.hypothesis/
+.coverage*
+.cache
+nosetests.xml
+coverage.xml
+htmlcov/
+*.cover
+*.py,cover
+cover/
+
+# Jupyter
+.ipynb_checkpoints
+
+# --- Node.js ---
+node_modules/
+jspm_packages/
+web_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Diagnostic reports
+report.*.json
+
+# Build outputs
+build/
+dist/
+*.tgz
+
+# TypeScript / Lint
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+
+# --- WhatsApp Web JS ---
+.wwebjs_auth/
+.wwebjs_cache/
+
+# --- Project-Specific ---
+.env
+data/
+logs/
+startup_error.log
+mock_output.txt
+*.dump*.txt
+viewer_messages.db
+*.tmp
+project_v0.8_dump.txt
+
+# --- Editors/IDE ---
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# JetBrains / PyCharm
+.idea/
+*.iml
+.history/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+last_*.txt
+project_v0.8_dump.txt
+project_v0.8_dump.txt
+env.example
+
+
+# --- END OF FILE .gitignore ---
+
+
+
+
+================================================================================
+📄 main.py
+================================================================================
+
+# --- START OF FILE main.py ---
+
+# main.py
+#
+# This is the main entry point for the Kairo application backend.
+# It is responsible for:
+# 1. Parsing command-line arguments to determine which bridge to use (e.g., cli, twilio).
+# 2. Initializing all necessary services and user states from the data store.
+# 3. Starting the background scheduler for daily rituals and reminders.
+# 4. Starting the FastAPI web server (Uvicorn) to listen for incoming messages from the bridge.
+# 5. Handling graceful shutdown of all services.
+
+import os
+import sys
+import asyncio
+import signal
+import argparse
+from dotenv import load_dotenv
+import threading
+
+# Load .env variables before any other project imports
+load_dotenv()
+
+# --- 1. Bridge Selection (Kept as per your request) ---
+# This logic allows you to select the active bridge via --bridge CLI arg or BRIDGE_TYPE env var.
+DEFAULT_BRIDGE = "twilio" # More stable default for production
+ALLOWED_BRIDGES = ["cli", "whatsapp", "twilio"]
+bridge_type_env = os.getenv("BRIDGE_TYPE", "").lower()
+
+parser = argparse.ArgumentParser(description="Run the Kairo Productivity Coach Backend")
+parser.add_argument("--bridge", type=str, choices=ALLOWED_BRIDGES, help=f"Specify the bridge interface ({', '.join(ALLOWED_BRIDGES)})")
+args = parser.parse_args()
+bridge_type_arg = args.bridge.lower() if args.bridge else None
+
+# Priority for selecting bridge: CLI argument > Environment variable > Default
+bridge_type = DEFAULT_BRIDGE
+if bridge_type_env in ALLOWED_BRIDGES:
+    bridge_type = bridge_type_env
+if bridge_type_arg:
+    bridge_type = bridge_type_arg
+
+# --- 2. Initial Logger and Core Imports ---
+try:
+    from tools.logger import log_info, log_error, log_warning
+except ImportError as e:
+    print(f"FATAL ERROR: Failed to import logger: {e}")
+    sys.exit(1)
+
+# Core service and user management imports
+from users.user_manager import init_all_agents
+from services.scheduler_service import start_scheduler, shutdown_scheduler
+from bridge.request_router import set_bridge
+import uvicorn
+import traceback
+
+# --- 3. Dynamic Bridge Initialization ---
+# This block dynamically imports and sets up the chosen communication bridge.
+uvicorn_app_path: str | None = None
+bridge_module_name: str | None = None
+bridge_instance: any = None
+
+try:
+    log_info("main", "init", f"Kairo v1.0 starting...")
+    log_info("main", "init", f"Attempting to initialize bridge: '{bridge_type}'")
+
+    if bridge_type == "cli":
+        from bridge.cli_interface import app as fastapi_app, CLIBridge, outgoing_cli_messages, cli_queue_lock
+        uvicorn_app_path = "bridge.cli_interface:app"
+        bridge_module_name = "CLI Bridge"
+        bridge_instance = CLIBridge(outgoing_cli_messages, cli_queue_lock)
+    elif bridge_type == "whatsapp":
+        from bridge.whatsapp_interface import app as fastapi_app, WhatsAppBridge, outgoing_whatsapp_messages, whatsapp_queue_lock
+        uvicorn_app_path = "bridge.whatsapp_interface:app"
+        bridge_module_name = "WhatsApp (whatsapp-web.js) Bridge"
+        bridge_instance = WhatsAppBridge(outgoing_whatsapp_messages, whatsapp_queue_lock)
+    elif bridge_type == "twilio":
+        from bridge.twilio_interface import app as fastapi_app, TwilioBridge
+        from twilio.rest import Client as TwilioSdkClient
+        
+        TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+        TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+        TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
+        
+        if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER]):
+            log_error("main", "init", "Twilio credentials not fully configured. Bridge will fail.")
+            # This is a fatal error if this bridge is selected
+            raise ValueError("Twilio bridge selected, but required environment variables are missing.")
+
+        _twilio_client = TwilioSdkClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        bridge_instance = TwilioBridge(
+            message_queue=[], lock=threading.Lock(), # Dummy queue/lock as Twilio sends directly
+            client=_twilio_client, twilio_sender_number=TWILIO_WHATSAPP_NUMBER
+        )
+        uvicorn_app_path = "bridge.twilio_interface:app"
+        bridge_module_name = "WhatsApp (Twilio) Bridge"
+    
+    # Set the initialized bridge in the request router
+    set_bridge(bridge_instance)
+    log_info("main", "init", f"Successfully initialized Bridge Interface: {bridge_module_name}")
+
+except (ImportError, ValueError) as e:
+    log_error("main", "init", f"Failed to import or configure bridge module for type '{bridge_type}': {e}", e)
+    sys.exit(1)
+
+# --- 4. Graceful Shutdown Handler ---
+server: uvicorn.Server | None = None
+
+async def handle_shutdown_signal(sig: signal.Signals, loop: asyncio.AbstractEventLoop):
+    """Handles OS signals to gracefully shut down the server and scheduler."""
+    log_warning("main", "shutdown", f"Received signal {sig.name}. Initiating shutdown...")
+    if server:
+        server.should_exit = True
+    # Give the server a moment to start shutting down before stopping the scheduler
+    await asyncio.sleep(1)
+    shutdown_scheduler()
+
+# --- 5. Main Asynchronous Application Logic ---
+async def main_async():
+    """Initializes services and starts the Uvicorn server."""
+    global server
+    
+    log_info("main", "startup", "Initializing agent states for all registered users...")
+    init_all_agents()
+    log_info("main", "startup", "Agent state initialization complete.")
+
+    log_info("main", "startup", "Starting scheduler service for daily rituals...")
+    if not start_scheduler():
+        log_error("main", "startup", "Scheduler service FAILED to start. Automated routines will not run.")
+    else:
+        log_info("main", "startup", "Scheduler service started successfully.")
+
+    # Server configuration
+    reload_enabled = os.getenv("APP_ENV", "production").lower() == "development"
+    log_level = "debug" if reload_enabled else "info"
+    server_port = int(os.getenv("PORT", "8000"))
+    
+    log_info("main", "startup", "Configuring FastAPI server...")
+    log_info("main", "startup", f"-> Target App: '{uvicorn_app_path}'")
+    log_info("main", "startup", f"-> Host: 0.0.0.0, Port: {server_port}")
+    log_info("main", "startup", f"-> Reload: {reload_enabled}")
+
+    config = uvicorn.Config(
+        uvicorn_app_path, host="0.0.0.0", port=server_port,
+        reload=reload_enabled, access_log=False, log_level=log_level, lifespan="on"
+    )
+    server = uvicorn.Server(config)
+
+    # Add signal handlers for graceful shutdown
+    loop = asyncio.get_running_loop()
+    for sig_name in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig_name, lambda s=sig_name: asyncio.create_task(handle_shutdown_signal(s, loop)))
+        except NotImplementedError: # For Windows compatibility
+            signal.signal(sig_name, lambda s, f: asyncio.create_task(handle_shutdown_signal(signal.Signals(s), loop)))
+
+    # Run the server
+    await server.serve()
+    
+    # This part runs after the server has stopped
+    log_info("main", "shutdown", "Server has stopped. Main async process finished.")
+
+
+# --- 6. Script Entry Point ---
+if __name__ == "__main__":
+    try:
+        asyncio.run(main_async())
+    except (KeyboardInterrupt, SystemExit) as e:
+        log_warning("main", "exit", f"Application exit requested ({type(e).__name__}).")
+    except Exception as e:
+        log_error("main", "critical", f"Unhandled error during server execution.", e)
+        log_error("main", "critical", f"Traceback:\n{traceback.format_exc()}")
+        sys.exit(1)
+    finally:
+        log_info("main", "exit", "Application has shut down.")
+
+# --- END OF FILE main.py ---
+
+
+
+
+================================================================================
+📄 agents/kairo_agent.py
+================================================================================
+
+# --- START OF FILE agents/kairo_agent.py ---
+
+# agents/kairo_agent.py
+import json
+from typing import Dict, List, Any
+
+# Core application imports
+from services.llm_interface import get_instructor_client
+from .tool_definitions import AVAILABLE_TOOLS, TOOL_PARAM_MODELS
+from tools.logger import log_info, log_error, log_warning
+from services.shared_resources import get_prompt, get_message_templates
+from users.user_manager import add_message_to_user_history
+
+
+# --- Setup ---
+ERROR_TEMPLATES = get_message_templates("generic_error_message") or {}
+GENERIC_ERROR_MSG = ERROR_TEMPLATES.get("en", "Sorry, an error occurred.")
+
+# --- Main Agent Handler ---
+def handle_user_request(user_id: str, message: str, full_context: Dict) -> str:
+    """Handles all incoming requests (user messages & system triggers) for Kairo."""
+    fn_name = "handle_user_request"
+    client = get_instructor_client()
+    if not client: return GENERIC_ERROR_MSG
+
+    # 1. Prepare context and prompt
+    try:
+        system_prompt = get_prompt("kairo_agent_system_prompt")
+        if not system_prompt:
+            log_error("kairo_agent", fn_name, "Critical: kairo_agent_system_prompt not found.")
+            return GENERIC_ERROR_MSG
+            
+        # --- THIS IS THE FIX ---
+        # Only fetch ACTIVE items to send to the LLM.
+        # This keeps the context small, fast, and relevant.
+        active_items = full_context.get("items", [])
+        # --- END OF FIX ---
+        
+        context_for_llm = {
+            "preferences": full_context.get("preferences", {}),
+            "items": active_items # Pass only the active items
+        }
+        context_json_str = json.dumps(context_for_llm, separators=(',', ':'), default=str)
+
+        history = full_context.get("conversation_history", [])
+        llm_history = _reconstruct_llm_history(history[-20:]) # Keep history reconstruction lean
+        system_message = f"{system_prompt}\n\n--- CURRENT USER CONTEXT ---\n{context_json_str}"
+        
+        messages_for_api = [{"role": "system", "content": system_message}, *llm_history]
+        if message:
+            messages_for_api.append({"role": "user", "content": message})
+            
+    except Exception as e:
+        log_error("kairo_agent", fn_name, f"Error preparing context for {user_id}", e)
+        return GENERIC_ERROR_MSG
+
+def _reconstruct_llm_history(history: List[Dict]) -> List[Dict]:
+    """
+    Helper to format the conversation history for the LLM API.
+    It now only includes 'user' and 'assistant' text messages, as tool
+    and system messages are handled within the single turn logic.
+    """
+    api_history = []
+    for entry in history:
+        role = entry.get("role")
+        
+        if role == "user":
+            api_history.append({"role": "user", "content": entry.get("content")})
+        elif role == "assistant":
+            # For the LLM's long-term memory, we only care about what was actually said to the user,
+            # not the intermediate tool call requests.
+            if entry.get("content"):
+                 api_history.append({"role": "assistant", "content": entry.get("content")})
+            
+    return api_history
+
+# --- END OF FILE agents/kairo_agent.py ---
+
+
+
+
+================================================================================
+📄 agents/tool_definitions.py
+================================================================================
+
+# --- START OF FILE agents/tool_definitions.py ---
+
+# agents/tool_definitions.py
+from pydantic import BaseModel, Field
+from typing import Dict, Optional
+
+# The tools now interact with our high-level service managers
+import services.task_manager as kairo_core
+import users.user_manager as user_manager
+from services.shared_resources import get_message_templates
+
+# ===================================================================
+# == 1. Pydantic Models for Tool Parameters
+# == Defines the expected inputs for each tool the agent can use.
+# ===================================================================
+
+class CreateTaskParams(BaseModel):
+    """A tool to create a new task item in the user's logbook."""
+    description: str = Field(..., description="The full description of the task.")
+    project: str = Field("", description="Optional: A project tag, e.g., '#work'.")
+    due_date: str = Field("", description="Optional: A due date in 'YYYY-MM-DD' format.")
+
+class CreateReminderParams(BaseModel):
+    """A tool to create a new reminder item for a specific time."""
+    description: str = Field(..., description="The full description of the reminder.")
+    remind_at: str = Field(..., description="The specific time for the reminder in ISO 8601 UTC format.")
+
+class UpdateItemParams(BaseModel):
+    """A tool to update one or more properties of an existing task or reminder."""
+    item_id: str = Field(..., description="The unique ID of the task or reminder to update.")
+    updates: Dict = Field(..., description="A dictionary of fields to update, e.g., {'description': 'new text', 'status': 'completed'}.")
+
+class UpdateUserPreferencesParams(BaseModel):
+    """A tool to update the user's core preferences like name or timezone."""
+    name: Optional[str] = Field(None, description="The user's preferred name.")
+    timezone: Optional[str] = Field(None, description="The user's timezone, e.g., 'America/New_York'.")
+    language: Optional[str] = Field(None, description="The user's language, 'en' or 'he'.")
+    work_days: Optional[list[str]] = Field(None, description="A list of the user's working days, e.g., ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']")
+
+class FinalizeOnboardingParams(BaseModel):
+    """
+    A tool to be called with no parameters when the user has confirmed their initial settings.
+    This action completes the setup process.
+    """
+    pass
+
+# ===================================================================
+# == 2. Tool Function Definitions
+# == The actual Python functions that get executed by the agent.
+# == Note: They return data for the agent, NOT user-facing messages.
+# ===================================================================
+
+def create_task(user_id: str, params: CreateTaskParams) -> Dict:
+    """Creates a new task item and returns its data."""
+    created_item = kairo_core.create_item(user_id, "task", params.model_dump())
+    if created_item:
+        return {"success": True, "item_id": created_item.get("item_id")}
+    return {"success": False, "error": "Failed to create task."}
+
+def create_reminder(user_id: str, params: CreateReminderParams) -> Dict:
+    """Creates a new reminder item and returns its data."""
+    created_item = kairo_core.create_item(user_id, "reminder", params.model_dump())
+    if created_item:
+        return {"success": True, "item_id": created_item.get("item_id")}
+    return {"success": False, "error": "Failed to create reminder."}
+
+def update_item(user_id: str, params: UpdateItemParams) -> Dict:
+    """Updates properties of an existing item and reports success."""
+    updated_item = kairo_core.update_item(user_id, params.item_id, params.updates)
+    if updated_item:
+        return {"success": True, "item_id": updated_item.get("item_id")}
+    return {"success": False, "error": "Failed to update item."}
+
+def update_user_preferences(user_id: str, params: UpdateUserPreferencesParams) -> Dict:
+    """Updates the user's preferences and reports success."""
+    updates_to_apply = params.model_dump(exclude_unset=True)
+    if not updates_to_apply:
+        return {"success": False, "error": "No preferences were provided to update."}
+    
+    success = user_manager.update_user_preferences(user_id, updates_to_apply)
+    return {"success": success}
+
+def finalize_onboarding(user_id: str, params: FinalizeOnboardingParams) -> Dict:
+    """Sets the user's status to 'active' and reports success."""
+    success = user_manager.update_user_preferences(user_id, {"status": "active"})
+    # The agent will formulate the final welcome message based on this success result.
+    return {"success": success}
+
+# ===================================================================
+# == 3. Tool Dictionaries for the Agent
+# == These dictionaries map the tool names to their functions and models.
+# ===================================================================
+
+AVAILABLE_TOOLS = {
+    "create_task": create_task,
+    "create_reminder": create_reminder,
+    "update_item": update_item,
+    "update_user_preferences": update_user_preferences,
+    "finalize_onboarding": finalize_onboarding,
+}
+
+TOOL_PARAM_MODELS = {
+    "create_task": CreateTaskParams,
+    "create_reminder": CreateReminderParams,
+    "update_item": UpdateItemParams,
+    "update_user_preferences": UpdateUserPreferencesParams,
+    "finalize_onboarding": FinalizeOnboardingParams,
+}
+
+# --- END OF FILE agents/tool_definitions.py ---
+
+
+
+
+================================================================================
+📄 bridge/request_router.py
+================================================================================
+
+# --- START OF FILE bridge/request_router.py ---
+
+# bridge/request_router.py
+import re
+import os
+import yaml
+import json
+from typing import Dict, Any
+
+from tools.logger import log_info, log_error
+import users.user_manager as user_manager
+from agents.kairo_agent import handle_user_request
+from services.cheats import handle_cheat_command
+from services.shared_resources import get_message_templates
+
+ERROR_TEMPLATES = get_message_templates("generic_error_message") or {}
+GENERIC_ERROR_MSG_ROUTER = ERROR_TEMPLATES.get("en", "Sorry, an error occurred.")
+current_bridge_router: Any = None
+
+def set_bridge(bridge_instance: Any):
+    global current_bridge_router
+    if current_bridge_router is None:
+        current_bridge_router = bridge_instance
+        log_info("request_router", "set_bridge", f"Bridge set to: {type(bridge_instance).__name__}")
+
+def send_message(user_id: str, message_body: str):
+    if not user_id or not message_body: return
+    user_manager.add_message_to_user_history(user_id, "assistant", "agent_text_response", content=message_body)
+    if current_bridge_router:
+        current_bridge_router.send_message(user_id, message_body)
+    else:
+        log_error("request_router", "send_message", "No bridge configured.")
+
+def normalize_user_id(user_id_from_bridge: str) -> str:
+    if not user_id_from_bridge: return ""
+    return re.sub(r'\D', '', str(user_id_from_bridge))
+
+def handle_incoming_message(user_id_from_bridge: str, message_text: str):
+    norm_user_id = normalize_user_id(user_id_from_bridge)
+    if not norm_user_id: return
+
+    if message_text.strip().startswith('/'):
+        parts = message_text.strip().split(); command = parts[0].lower(); args = parts[1:]
+        cheat_result = handle_cheat_command(norm_user_id, command, args)
+        action_type = cheat_result.get("type")
+        
+        if action_type == "message":
+            send_message(norm_user_id, cheat_result.get("content", "OK."))
+        elif action_type == "system_event":
+            event_data = {"user_id": norm_user_id, "trigger_type": cheat_result.get("trigger_type")}
+            handle_internal_system_event(event_data)
+        return
+
+    user_manager.add_message_to_user_history(norm_user_id, "user", "user_text", content=message_text)
+    agent_state = user_manager.get_agent(norm_user_id)
+    if not agent_state:
+        log_error("request_router", "handle_incoming", f"CRITICAL: Failed to get agent state for {norm_user_id}.")
+        send_message(norm_user_id, GENERIC_ERROR_MSG_ROUTER)
+        return
+
+    user_prefs = agent_state.get("preferences", {})
+    user_status = user_prefs.get("status")
+    
+    if user_status == "new":
+        user_lang = user_prefs.get("language", "en")
+        welcome_templates = get_message_templates("initial_welcome_message") or {}
+        send_message(norm_user_id, welcome_templates.get(user_lang, "Hello!"))
+        user_manager.update_user_preferences(norm_user_id, {"status": "pending_onboarding"})
+        return
+
+    elif user_status == "pending_onboarding":
+        affirmative_responses = {"yes", "y", "ok", "sure", "yep", "כן", "כן.", "שנתחיל", "בטח"}
+        if message_text.lower().strip() in affirmative_responses:
+            user_manager.update_user_preferences(norm_user_id, {"status": "onboarding"})
+            agent_state = user_manager.get_agent(norm_user_id) # Refresh state
+        else:
+            return
+
+    try:
+        response = handle_kairo_request(user_id=norm_user_id, message=message_text, full_context=agent_state)
+        if response: send_message(norm_user_id, response)
+    except Exception as e:
+        log_error("request_router", "handle_incoming", f"Error from KairoAgent for {norm_user_id}", e)
+        send_message(norm_user_id, GENERIC_ERROR_MSG_ROUTER)
+
+def handle_internal_system_event(event_data: Dict):
+    user_id = event_data.get("user_id")
+    trigger_type = event_data.get("trigger_type")
+    if not user_id or not trigger_type: return
+
+    trigger_as_message = json.dumps({"trigger": trigger_type})
+    agent_state = user_manager.get_agent(user_id)
+    if not agent_state or agent_state.get("preferences", {}).get("status") != "active": return
+
+    try:
+        response = handle_kairo_request(user_id=user_id, message=trigger_as_message, full_context=agent_state)
+        if response: send_message(user_id, response)
+    except Exception as e:
+        log_error("request_router", "handle_internal", f"Error routing internal event '{trigger_type}' for {user_id}", e)
+
+# --- END OF FILE bridge/request_router.py ---
+
+
+
+
+================================================================================
+📄 services/llm_interface.py
+================================================================================
+
+# --- START OF FILE services/llm_interface.py ---
+
+# llm_interface.py
+import os
+import openai
+import instructor
+import threading
+from tools.logger import log_info, log_error
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+_client = None
+_client_lock = threading.Lock()
+
+def get_instructor_client():
+    """Initializes and returns a singleton, instructor-patched OpenAI client."""
+    global _client
+    if not OPENAI_API_KEY:
+        log_error("llm_interface", "get_instructor_client", "OPENAI_API_KEY not found in environment.")
+        return None
+
+    with _client_lock:
+        if _client is None:
+            try:
+                log_info("llm_interface", "get_instructor_client", "Initializing instructor-patched OpenAI client...")
+                # Initialize the OpenAI client
+                base_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+                # Patch it with Instructor
+                _client = instructor.patch(base_client)
+                log_info("llm_interface", "get_instructor_client", "Instructor-patched OpenAI client initialized.")
+            except Exception as e:
+                log_error("llm_interface", "get_instructor_client", f"Failed to initialize OpenAI client: {e}", e)
+                _client = None # Ensure it remains None on failure
+    return _client
+
+
+# --- END OF FILE services/llm_interface.py ---
+
+
+
+
+================================================================================
+📄 services/notification_service.py
+================================================================================
+
+# --- START OF FILE services/notification_service.py ---
+
+# services/notification_service.py
+from datetime import datetime, timezone, timedelta
+import pytz
+from typing import Dict
+
+from tools.logger import log_info, log_error, log_warning
+# This now gets the user list directly from our new data layer manager
+from users.user_manager import get_all_user_data
+from bridge.request_router import send_message
+from services.agent_state_manager import get_notified_event_ids, add_notified_event_id, clear_notified_event_ids
+from services.task_manager import update_item # To mark reminder as complete
+
+# Minimal translations for notification messages
+NOTIFICATION_TRANSLATIONS = {
+    "en": {
+        "reminder_alert": "🔔 Reminder: {description}",
+    },
+    "he": {
+        "reminder_alert": "🔔 תזכורת: {description}",
+    }
+}
+
+def _get_notification_translation(lang: str, key: str, default_lang: str = "en") -> str:
+    """Fetches a translation string for notifications."""
+    return NOTIFICATION_TRANSLATIONS.get(lang, {}).get(key, "{description}")
+
+def check_and_send_reminders():
+    """
+    Scheduled job that iterates through all users, checks for upcoming internal reminders,
+    and sends a notification if the time is right.
+    """
+    fn_name = "check_and_send_reminders"
+    now_utc = datetime.now(timezone.utc)
+    all_users = get_all_user_data()
+
+    for user_id, user_data in all_users.items():
+        prefs = user_data.get("preferences", {})
+        if prefs.get("status") != "active":
+            continue
+
+        # Get the set of IDs we've already notified today
+        notified_today_set = get_notified_event_ids(user_id)
+        
+        # Iterate through a copy of the items list to avoid modification issues
+        for item in list(user_data.get("items", [])):
+            if item.get("type") == "reminder" and item.get("status") == "new" and item.get("remind_at"):
+                item_id = item.get("item_id")
+                if not item_id or item_id in notified_today_set:
+                    continue
+
+                try:
+                    remind_at_utc = datetime.fromisoformat(item["remind_at"].replace('Z', '+00:00'))
+                    
+                    # Send notification if the reminder time is in the past or within the next minute
+                    if remind_at_utc <= (now_utc + timedelta(minutes=1)):
+                        user_lang = prefs.get("language", "en")
+                        description = item.get("description", "(No Title)")
+                        
+                        # Format the notification message
+                        template = _get_notification_translation(user_lang, "reminder_alert")
+                        message = template.format(description=description)
+                        
+                        # Send the message
+                        log_info(fn_name, "notification_service", f"Sending reminder '{item_id}' to user {user_id}")
+                        send_message(user_id, message)
+                        
+                        # Mark as notified for today to prevent duplicates
+                        add_notified_event_id(user_id, item_id)
+                        
+                        # Mark the reminder as complete in the database
+                        update_item(user_id, item_id, {"status": "completed"})
+
+                except (ValueError, TypeError) as e:
+                    log_warning(fn_name, "notification_service", f"Could not parse remind_at for item {item_id}: {item['remind_at']}. Error: {e}")
+                except Exception as e:
+                    log_error(fn_name, "notification_service", f"Error processing reminder {item_id} for user {user_id}", e)
+
+# The scheduler will also need to call a daily cleanup job.
+def daily_notification_cleanup():
+    """Clears the set of notified IDs for all users, run once daily."""
+    all_users = get_all_user_data()
+    for user_id in all_users.keys():
+        clear_notified_event_ids(user_id)
+    log_info("notification_service", "daily_cleanup", f"Cleared notified event IDs for {len(all_users)} users.")
+
+# --- END OF FILE services/notification_service.py ---
+
+
+
+
+================================================================================
+📄 services/scheduler_service.py
+================================================================================
+
+# --- START OF FILE services/scheduler_service.py ---
+
+# services/scheduler_service.py
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.executors.pool import ThreadPoolExecutor
+from apscheduler.events import EVENT_JOB_ERROR
+import pytz
+from datetime import datetime
+
+from tools.logger import log_info, log_error, log_warning
+# Correctly import from the new data manager
+import users.user_manager as user_manager
+from bridge.request_router import handle_internal_system_event
+
+scheduler: BackgroundScheduler | None = None
+ROUTINE_CHECK_INTERVAL_MINUTES = 1
+
+def _job_listener(event):
+    if event.exception:
+        log_error("scheduler_service", "_job_listener", f"Job crashed: {event.job_id}", event.exception)
+
+def _check_and_trigger_routines():
+    """Scheduled job that triggers daily rituals for active users on their workdays."""
+    all_users_records = user_manager.get_all_user_data()
+    for user_id, user_data in all_users_records.items():
+        prefs = user_data.get("preferences", {})
+        if prefs.get("status") != "active": continue
+        try:
+            user_tz = pytz.timezone(prefs.get("timezone", "UTC"))
+            now_local = datetime.now(user_tz)
+            if now_local.strftime("%A") not in prefs.get("work_days", []): continue
+            
+            current_local_hm = now_local.strftime("%H:%M")
+            today_str = now_local.strftime("%Y-%m-%d")
+
+            if current_local_hm == prefs.get("morning_muster_time") and prefs.get("last_morning_trigger_date") != today_str:
+                handle_internal_system_event({"user_id": user_id, "trigger_type": "morning_muster"})
+                user_manager.update_user_preferences(user_id, {"last_morning_trigger_date": today_str})
+
+            if current_local_hm == prefs.get("evening_reflection_time") and prefs.get("last_evening_trigger_date") != today_str:
+                handle_internal_system_event({"user_id": user_id, "trigger_type": "evening_reflection"})
+                user_manager.update_user_preferences(user_id, {"last_evening_trigger_date": today_str})
+        except Exception as e:
+            log_error("scheduler_service", "_check_routines", f"Error processing routines for user {user_id}", e)
+
+def _check_and_send_reminders():
+    """Scheduled job to check for and send time-based reminders."""
+    try:
+        from services.notification_service import check_and_send_reminders as send_reminders_func
+        send_reminders_func()
+    except ImportError:
+        log_warning("scheduler_service", "_check_reminders", "Could not import notification_service.")
+    except Exception as e:
+        log_error("scheduler_service", "_check_reminders", "Error during reminder check", e)
+
+def start_scheduler() -> bool:
+    """Initializes and starts the background scheduler with all required jobs."""
+    global scheduler
+    if scheduler and scheduler.running: return True
+    try:
+        scheduler = BackgroundScheduler(timezone="UTC")
+        scheduler.add_job(_check_and_trigger_routines, 'interval', minutes=ROUTINE_CHECK_INTERVAL_MINUTES, id='kairo_ritual_check')
+        scheduler.add_job(_check_and_send_reminders, 'interval', minutes=ROUTINE_CHECK_INTERVAL_MINUTES, id='kairo_reminder_check')
+        scheduler.add_listener(_job_listener, EVENT_JOB_ERROR)
+        scheduler.start()
+        log_info("scheduler_service", "start", "Scheduler started successfully.")
+        return True
+    except Exception as e:
+        log_error("scheduler_service", "start", "Failed to start APScheduler", e)
+        return False
+
+def shutdown_scheduler():
+    if scheduler and scheduler.running:
+        scheduler.shutdown(wait=False)
+
+# --- END OF FILE services/scheduler_service.py ---
+
+
+
+
+================================================================================
+📄 services/task_manager.py
+================================================================================
+
+# --- START OF FILE services/task_manager.py ---
+
+# services/task_manager.py
+import uuid
+from datetime import datetime, timezone
+from typing import Dict
+
+from users.user_manager import get_agent, save_user_data
+from tools.logger import log_info, log_error
+
+def create_item(user_id: str, item_type: str, item_params: Dict) -> Dict:
+    user_data = get_agent(user_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    new_item = {
+        "item_id": str(uuid.uuid4()), "type": item_type, "status": "new",
+        "created_at": now_iso, "updated_at": now_iso, **item_params
+    }
+    user_data.setdefault("items", []).append(new_item)
+    save_user_data(user_id, user_data)
+    log_info("task_manager", "create_item", f"Created {item_type} '{new_item['item_id']}' for {user_id}.")
+    return {"success": True, "item_id": new_item.get("item_id")}
+
+def update_item(user_id: str, item_id: str, updates: Dict) -> Dict:
+    user_data = get_agent(user_id)
+    items = user_data.get("items", [])
+    item_found = False
+    for i, item in enumerate(items):
+        if item.get("item_id") == item_id:
+            items[i].update(updates)
+            items[i]["updated_at"] = datetime.now(timezone.utc).isoformat()
+            item_found = True
+            break
+    
+    if item_found:
+        save_user_data(user_id, user_data)
+        return {"success": True, "item_id": item_id}
+    else:
+        log_error("task_manager", "update_item", f"Item {item_id} not found for user {user_id}.")
+        return {"success": False, "error": "Item not found."}
+
+# --- END OF FILE services/task_manager.py ---
+
+
+
+
+================================================================================
+📄 services/cheats.py
+================================================================================
+
+# --- START OF FILE services/cheats.py ---
+
+# services/cheats.py
+import json
+from typing import List, Dict, Any
+
+import users.user_manager as user_manager
+from tools.logger import log_info
+
+def _handle_help() -> Dict:
+    """Displays the available cheat commands."""
+    return {"type": "message", "content": """Available Kairo Cheat Commands:
+/help - Show this help message
+/list [status] - List your items (status: active, new, in_progress, completed, deleted, all).
+/memory - Show a summary of your current in-memory agent state.
+/clear - !! DANGER !! Mark all non-deleted items as 'deleted'.
+/morning - Manually trigger your Morning Muster.
+/evening - Manually trigger your Evening Reflection."""}
+
+def _handle_list(user_id: str, args: List[str]) -> Dict:
+    """Lists items from the user's current agent state."""
+    agent_state = user_manager.get_agent(user_id)
+    if not agent_state or "items" not in agent_state:
+        return {"type": "message", "content": "Error: Could not retrieve your items."}
+
+    all_items = agent_state.get("items", [])
+    status_filter = args[0].lower() if args else 'active'
+    active_statuses = {"new", "in_progress"}
+    
+    if status_filter == 'all':
+        filtered_items = all_items
+    elif status_filter == 'active':
+        filtered_items = [item for item in all_items if item.get('status') in active_statuses]
+    else:
+        filtered_items = [item for item in all_items if item.get('status') == status_filter]
+
+    if not filtered_items:
+        return {"type": "message", "content": f"No items found with status '{status_filter}'."}
+
+    lines = [f"Items with status '{status_filter}':", "---"]
+    for item in filtered_items:
+        desc = item.get('description', '(No Description)')
+        item_type = item.get('type', 'item')
+        lines.append(f"({item_type}) {desc}")
+    return {"type": "message", "content": "\n".join(lines)}
+
+def _handle_memory(user_id: str) -> Dict:
+    """Shows a summary of the agent's in-memory state."""
+    agent_state = user_manager.get_agent(user_id)
+    if not agent_state:
+        return {"type": "message", "content": "Error: Agent state not found."}
+        
+    state_summary = {k: v for k, v in agent_state.items() if k != "conversation_history"}
+    state_summary["history_count"] = len(agent_state.get("conversation_history", []))
+    return {"type": "message", "content": f"Agent Memory Summary:\n```json\n{json.dumps(state_summary, indent=2, default=str)}\n```"}
+
+def _handle_clear(user_id: str) -> Dict:
+    """Marks all non-deleted items as 'deleted'."""
+    from services.task_manager import update_item # Local import to avoid loops
+    agent_state = user_manager.get_agent(user_id)
+    if not agent_state: return {"type": "message", "content": "Error: Could not find user to clear items."}
+        
+    cleared_count = 0
+    for item in agent_state.get("items", []):
+        if item.get("status") != "deleted" and item.get("item_id"):
+            update_item(user_id, item["item_id"], {"status": "deleted"})
+            cleared_count += 1
+    return {"type": "message", "content": f"Marked {cleared_count} item(s) as 'deleted'."}
+
+def _handle_routines(routine_type: str) -> Dict:
+    """Returns a special dictionary instructing the router to trigger a system event."""
+    log_info("cheats", "_handle_routines", f"Cheat command is requesting a '{routine_type}' trigger.")
+    return {"type": "system_event", "trigger_type": routine_type}
+
+def handle_cheat_command(user_id: str, command: str, args: List[str]) -> Dict[str, Any]:
+    """Main router for all cheat commands. Returns a dictionary specifying the action."""
+    command_map = {
+        "/help": _handle_help,
+        "/list": lambda: _handle_list(user_id, args),
+        "/memory": lambda: _handle_memory(user_id),
+        "/clear": lambda: _handle_clear(user_id),
+        "/morning": lambda: _handle_routines("morning_muster"),
+        "/evening": lambda: _handle_routines("evening_reflection")
+    }
+    handler = command_map.get(command.lower())
+    return handler() if handler else {"type": "message", "content": f"Unknown command: '{command}'. Try /help."}
+
+# --- END OF FILE services/cheats.py ---
+
+
+
+
+================================================================================
+📄 services/shared_resources.py
+================================================================================
+
+# --- START OF FILE services/shared_resources.py ---
+
+# services/shared_resources.py
+# This module is a centralized place to load shared resources like prompts and messages.
+# It has no other project dependencies, which prevents circular imports.
+import yaml
+import os
+from tools.logger import log_error, log_info
+
+_PROMPTS = {}
+_MESSAGES = {}
+
+def load_resources():
+    """Loads all YAML files into memory."""
+    global _PROMPTS, _MESSAGES
+    
+    try:
+        with open("config/prompts.yaml", 'r', encoding="utf-8") as f:
+            _PROMPTS = yaml.safe_load(f) or {}
+    except Exception as e:
+        log_error("shared_resources", "load_resources", f"Failed to load prompts.yaml: {e}")
+        _PROMPTS = {}
+
+    try:
+        with open("config/messages.yaml", 'r', encoding="utf-8") as f:
+            _MESSAGES = yaml.safe_load(f) or {}
+    except Exception as e:
+        log_error("shared_resources", "load_resources", f"Failed to load messages.yaml: {e}")
+        _MESSAGES = {}
+        
+    log_info("shared_resources", "load_resources", "Shared prompts and messages have been loaded.")
+
+def get_prompt(key: str) -> str | None:
+    """Gets a specific prompt by its key."""
+    return _PROMPTS.get(key)
+
+def get_message_templates(key: str) -> dict | None:
+    """Gets a dictionary of message templates (for different languages) by its key."""
+    return _MESSAGES.get(key)
+
+# Load resources when the module is first imported.
+load_resources()
+
+# --- END OF FILE services/shared_resources.py ---
+
+
+
+
+================================================================================
+📄 users/user_manager.py
+================================================================================
+
+# --- START OF FILE users/user_manager.py ---
+
+# users/user_manager.py
+# FINAL VERSION: Manages user data with correct locking to prevent deadlocks.
+import json
+import os
+import re
+from typing import Dict, Any, List
+from tools.logger import log_info, log_error
+import threading
+
+# --- File and Data Configuration ---
+USER_DATA_PATH = os.path.join("data", f"kairo_users{os.getenv('DATA_SUFFIX', '')}.json")
+_user_data_store: Dict[str, Dict[str, Any]] = {}
+_data_lock = threading.Lock() # Lock to protect file I/O and in-memory store access
+
+DEFAULT_PREFERENCES = {
+    "name": "friend", "timezone": None, "language": "en",
+    "morning_muster_time": "08:00", "evening_reflection_time": "18:30",
+    "status": "new", "projects": ["general", "work", "personal"],
+    "work_days": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"],
+    "last_morning_trigger_date": "", "last_evening_trigger_date": "",
+}
+
+# --- Core Data Functions (Private) ---
+
+def _load_user_data_from_file():
+    """(Private) Loads the user data store from file into memory. Must be called within a lock."""
+    global _user_data_store
+    try:
+        os.makedirs(os.path.dirname(USER_DATA_PATH), exist_ok=True)
+        if os.path.exists(USER_DATA_PATH):
+            with open(USER_DATA_PATH, "r", encoding="utf-8") as f:
+                content = f.read()
+                _user_data_store = json.loads(content) if content.strip() else {}
+            log_info("user_manager", "load_data", f"Loaded data for {len(_user_data_store)} users.")
+        else:
+            _user_data_store = {}
+    except Exception as e:
+        log_error("user_manager", "load_data", f"Failed to load user data file", e)
+        _user_data_store = {}
+
+def _save_user_data_to_file():
+    """(Private) Saves the entire in-memory store to file. Must be called within a lock."""
+    try:
+        temp_path = USER_DATA_PATH + ".tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(_user_data_store, f, indent=2, ensure_ascii=False)
+        os.replace(temp_path, USER_DATA_PATH)
+    except Exception as e:
+        log_error("user_manager", "_save_data", f"Failed to write user data to file", e)
+
+# --- Public API for Application ---
+
+def init_all_agents():
+    """Loads all user data from file at startup. This is the only time we need this function."""
+    with _data_lock:
+        _load_user_data_from_file()
+    log_info("user_manager", "init_all_agents", f"Initialized user data store with {len(_user_data_store)} users.")
+
+def get_agent(user_id: str) -> Dict[str, Any]:
+    """
+    Retrieves a deep copy of a user's state. Creates a new user if not found.
+    This function safely copies the data so the main thread can work on it without locking.
+    """
+    with _data_lock:
+        if user_id not in _user_data_store:
+            log_info("user_manager", "get_agent", f"Creating new user record for {user_id}")
+            _user_data_store[user_id] = {
+                "user_id": user_id,
+                "preferences": DEFAULT_PREFERENCES.copy(),
+                "items": [],
+                "conversation_history": []
+            }
+            _save_user_data_to_file()
+        
+        # Return a copy to prevent holding the lock during long operations
+        return json.loads(json.dumps(_user_data_store[user_id]))
+
+def get_all_user_data() -> Dict[str, Dict[str, Any]]:
+    """Returns a deep copy of all user data for the scheduler."""
+    with _data_lock:
+        return json.loads(json.dumps(_user_data_store))
+
+def add_message_to_user_history(user_id: str, role: str, message_type: str, content: str | None, **kwargs):
+    """Adds a message to a user's conversation history in memory."""
+    with _data_lock:
+        user_data = _user_data_store.get(user_id)
+        if user_data:
+            history_entry = {"role": role, "message_type": message_type, "content": content, **kwargs}
+            history = user_data.setdefault("conversation_history", [])
+            history.append(history_entry)
+            user_data["conversation_history"] = history[-40:] # Trim history
+
+def save_user_data(user_id: str, updated_user_data: Dict[str, Any]):
+    """Saves an entire user data object back to the store and to disk."""
+    with _data_lock:
+        _user_data_store[user_id] = updated_user_data
+        _save_data_to_file()
+
+def update_user_preferences(user_id: str, updates: Dict) -> bool:
+    """Safely updates a user's preferences and saves to disk."""
+    with _data_lock:
+        # Get the current state within the lock
+        user_data = _user_data_store.get(user_id)
+        if not user_data:
+            log_error("user_manager", "update_prefs", f"Cannot update prefs, user {user_id} not found.")
+            return False
+        
+        user_data.setdefault("preferences", {}).update(updates)
+        _save_data_to_file()
+    return True
+
+# --- END OF FILE users/user_manager.py ---
+
+
+
+
+================================================================================
+📄 bridge/cli_interface.py
+================================================================================
+
+# --- START OF FILE bridge/cli_interface.py ---
+
+# --- START OF FULL bridge/cli_interface.py ---
+
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+import uvicorn
+import uuid
+from threading import Lock, Thread
+import time
+import json # Added for error handling
+
+# Use the central logger
+from tools.logger import log_info, log_error, log_warning
+# Import the central router and its setter function
+from bridge.request_router import handle_incoming_message, set_bridge
+
+# Ensure calendar_tool provides the router correctly (needed for OAuth)
+try:
+    from tools.calendar_tool import router as calendar_router
+    CALENDAR_ROUTER_IMPORTED = True
+    log_info("cli_interface", "import", "Successfully imported calendar_router.")
+except ImportError:
+    log_error("cli_interface", "import", "Could not import calendar_router from tools.calendar_tool. OAuth callback will fail if CLI mode used.")
+    CALENDAR_ROUTER_IMPORTED = False
+    from fastapi import APIRouter
+    calendar_router = APIRouter()
+
+
+# Define a CLI Bridge
+# Global in-memory store for CLI outgoing messages.
+outgoing_cli_messages = []
+cli_queue_lock = Lock()
+
+class CLIBridge:
+    """Bridge that handles message queuing for CLI interaction."""
+    def __init__(self, message_queue, lock):
+        self.message_queue = message_queue
+        self.lock = lock
+        log_info("CLIBridge", "__init__", "CLI Bridge initialized for queuing.")
+
+    # --- UPDATED send_message ---
+    def send_message(self, user_id: str, message: str):
+        """
+        Adds the outgoing message to the CLI queue.
+        Does NOT log the message content here (handled by request_router).
+        """
+        # user_id received here is the NORMALIZED ID from request_router
+        if not user_id or not message:
+             log_warning("CLIBridge", "send_message", f"Attempted to queue empty message or invalid user_id for CLI: {user_id}")
+             return
+
+        outgoing = {
+            "user_id": user_id, # Use the normalized ID for CLI mock
+            "message": message,
+            "message_id": str(uuid.uuid4()) # Generate ID, might be used by mock sender ACK
+        }
+        log_info("CLIBridge", "send_message", f"QUEUING for {user_id} (ID: {outgoing['message_id']}): '{message[:200]}'")
+        with self.lock:
+            self.message_queue.append(outgoing)
+        # Log the queuing action
+        log_info("CLIBridge", "send_message", f"Message for CLI user {user_id} queued (ID: {outgoing['message_id']}). Queue size: {len(self.message_queue)}")
+    # --- END UPDATED send_message ---
+
+# Set the global bridge in the router to use our CLI Bridge instance
+# This should only be called by main.py if CLI mode is selected
+# if __name__ != "__main__": # Crude check
+#     set_bridge(CLIBridge(outgoing_cli_messages, cli_queue_lock))
+#     log_info("cli_interface", "init", "CLI Bridge potentially set in request_router.")
+
+def create_cli_app() -> FastAPI:
+    """Creates the FastAPI app instance for the CLI Interface."""
+    app = FastAPI(
+        title="WhatsTasker CLI Bridge API",
+        description="Handles interaction for the CLI mock sender.",
+        version="1.0.0"
+    )
+
+    # Include calendar routes if needed
+    if CALENDAR_ROUTER_IMPORTED:
+        app.include_router(calendar_router, prefix="", tags=["Authentication"])
+        log_info("cli_interface", "create_cli_app", "Calendar router included.")
+    else:
+         log_warning("cli_interface", "create_cli_app", "Calendar router not included.")
+
+
+    # --- API Endpoints (Adjusted for CLI mock) ---
+    @app.post("/incoming", tags=["CLI Bridge"])
+    async def incoming_cli_message(request: Request):
+        """Receives message from CLI mock, processes it, queues response, returns ack."""
+        endpoint_name = "incoming_cli_message"
+        try:
+            data = await request.json()
+            user_id = data.get("user_id") # Expecting normalized ID from mock sender
+            message = data.get("message")
+            if not user_id or message is None:
+                log_warning("cli_interface", endpoint_name, f"Received invalid payload: {data}")
+                raise HTTPException(status_code=400, detail="Missing user_id or message")
+
+            log_info("cli_interface", endpoint_name, f"Received message via CLI bridge from user {user_id}: '{str(message)[:50]}...'")
+
+            # Pass normalized ID to router, router handles DB logging
+            handle_incoming_message(user_id, str(message))
+
+            # Return only an acknowledgment.
+            return JSONResponse(content={"ack": True})
+
+        except json.JSONDecodeError:
+            log_error("cli_interface", endpoint_name, "Received non-JSON payload.")
+            raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        except HTTPException as http_exc:
+            raise http_exc
+        except Exception as e:
+            log_error("cli_interface", endpoint_name, "Error processing incoming CLI message", e)
+            raise HTTPException(status_code=500, detail="Internal server error processing message")
+
+    @app.get("/outgoing", tags=["CLI Bridge"])
+    async def get_outgoing_cli_messages():
+        """Returns and clears the list of queued outgoing messages for the CLI mock."""
+        # This endpoint *differs* from the WhatsApp one - it clears on GET
+        endpoint_name = "get_outgoing_cli_messages"
+        msgs_to_send = []
+        with cli_queue_lock:
+            # Return all messages currently in the queue and clear it
+            msgs_to_send = outgoing_cli_messages[:] # Copy the list
+            outgoing_cli_messages.clear()          # Clear the original list
+        if msgs_to_send:
+            log_info("cli_interface", endpoint_name, f"Returning {len(msgs_to_send)} messages from CLI queue (and clearing).")
+        return JSONResponse(content={"messages": msgs_to_send})
+
+    @app.post("/ack", tags=["CLI Bridge"])
+    async def acknowledge_cli_message(request: Request):
+        """Receives acknowledgment (currently does nothing for CLI as queue is cleared on GET)."""
+        endpoint_name = "acknowledge_cli_message"
+        try:
+            data = await request.json()
+            message_id = data.get("message_id")
+            if not message_id:
+                log_warning("cli_interface", endpoint_name, f"Received ACK without message_id: {data}")
+                raise HTTPException(status_code=400, detail="Missing message_id")
+
+            # Log but don't modify queue here, as GET already cleared it for CLI mock
+            log_info("cli_interface", endpoint_name, f"CLI Ack received for message {message_id} (queue already cleared by GET).")
+            return JSONResponse(content={"ack_received": True, "removed": False}) # Indicate not removed by ACK
+        except json.JSONDecodeError:
+            log_error("cli_interface", endpoint_name, "Received non-JSON ACK payload.")
+            raise HTTPException(status_code=400, detail="Invalid JSON payload for ACK")
+        except HTTPException as http_exc:
+            raise http_exc
+        except Exception as e:
+            log_error("cli_interface", endpoint_name, f"Error processing CLI ACK for message_id {data.get('message_id', 'N/A')}", e)
+            raise HTTPException(status_code=500, detail="Internal server error processing ACK")
+
+    return app
+
+# Create the FastAPI app instance for this interface
+# main.py should import 'app' from here if cli mode is selected
+app = create_cli_app()
+
+# --- END OF FULL bridge/cli_interface.py ---
+
+# --- END OF FILE bridge/cli_interface.py ---
+
+
+
+
+================================================================================
+📄 bridge/twilio_interface.py
+================================================================================
+
+# --- START OF FILE bridge/twilio_interface.py ---
+
+# --- START OF FULL bridge/twilio_interface.py ---
+
+from fastapi import FastAPI, Request, HTTPException, Form, BackgroundTasks
+from fastapi.responses import Response as FastAPIResponse # Use a more generic name to avoid conflict
+from twilio.request_validator import RequestValidator
+from twilio.rest import Client as TwilioClient
+import os
+from typing import Dict, List, Any # Keep for type hints
+import uuid
+from threading import Lock
+
+from tools.logger import log_info, log_error, log_warning
+from bridge.request_router import handle_incoming_message, set_bridge # Assuming set_bridge can handle multiple
+
+# --- Twilio Configuration ---
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER") # Your Twilio WhatsApp sender number e.g., "whatsapp:+14155238886"
+
+if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER]):
+    log_error("twilio_interface", "config", "Twilio credentials or WhatsApp number missing from environment. Twilio bridge will not function.")
+    # Optionally, raise an error or prevent app creation if Twilio is the selected bridge type.
+
+# Initialize Twilio client and validator if credentials are provided
+twilio_client: TwilioClient | None = None
+twilio_validator: RequestValidator | None = None
+if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+    try:
+        twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN)
+        log_info("twilio_interface", "init", "Twilio client and validator initialized.")
+    except Exception as e_twilio_init:
+        log_error("twilio_interface", "init", "Failed to initialize Twilio client/validator.", e_twilio_init)
+        twilio_client = None
+        twilio_validator = None
+
+# Global in-memory store for Twilio outgoing messages (similar to other bridges)
+outgoing_twilio_messages: List[Dict[str, Any]] = []
+twilio_queue_lock = Lock()
+
+class TwilioBridge:
+    """Bridge for Twilio WhatsApp interactions."""
+    def __init__(self, message_queue: List[Dict[str, Any]], lock: Lock, client: TwilioClient | None, twilio_sender_number: str | None):
+        self.message_queue = message_queue # Not directly used by Twilio for sending, but kept for consistency
+        self.lock = lock
+        self.client = client
+        self.twilio_sender_number = twilio_sender_number
+        log_info("TwilioBridge", "__init__", "Twilio Bridge instance initialized.")
+
+    def send_message(self, user_id: str, message_body: str):
+        """
+        Sends a message via Twilio to the user.
+        user_id here is expected to be normalized by request_router.
+        We need to format it back to Twilio's 'whatsapp:+<number>' format.
+        """
+        fn_name = "send_message_twilio"
+        if not self.client or not self.twilio_sender_number:
+            log_error("twilio_interface", fn_name, "Twilio client or sender number not configured. Cannot send message.")
+            return
+
+        if not user_id or not message_body:
+            log_warning("twilio_interface", fn_name, f"Attempted to send empty message or invalid user_id via Twilio: {user_id}")
+            return
+
+        # Ensure user_id is in Twilio's format (e.g., whatsapp:+1234567890)
+        # request_router should provide a normalized number. Add prefix back.
+        # Assuming normalized_user_id is just the number part e.g. "1234567890"
+        if not user_id.startswith("whatsapp:"):
+            twilio_recipient_id = f"whatsapp:+{user_id}"
+        else:
+            twilio_recipient_id = user_id # Already in correct format
+
+        try:
+            log_info("twilio_interface", fn_name, f"Sending Twilio message from {self.twilio_sender_number} to {twilio_recipient_id}: '{message_body[:50]}...'")
+            message_instance = self.client.messages.create(
+                from_=self.twilio_sender_number,
+                body=message_body,
+                to=twilio_recipient_id
+            )
+            log_info("twilio_interface", fn_name, f"Twilio message sent. SID: {message_instance.sid}")
+            # Note: Twilio doesn't use our internal message_id for ACKs in the same way wa_bridge.js does.
+            # The ACK for Twilio is handled by the HTTP response to their webhook.
+        except Exception as e:
+            log_error("twilio_interface", fn_name, f"Error sending Twilio message to {twilio_recipient_id}", e)
+
+# --- Helper for Background Task ---
+async def process_incoming_twilio_message_background(user_id_from_bridge: str, message_body_from_bridge: str):
+    fn_name = "process_incoming_twilio_message_background"
+    try:
+        # log_info("twilio_interface", fn_name, f"Twilio background task started for user {user_id_from_bridge}") # Verbose
+        handle_incoming_message(user_id_from_bridge, message_body_from_bridge)
+        # log_info("twilio_interface", fn_name, f"Twilio background task finished for user {user_id_from_bridge}") # Verbose
+    except Exception as e:
+        log_error("twilio_interface", fn_name, f"Unhandled exception in Twilio background message processing for {user_id_from_bridge}", e)
+
+
+def create_twilio_app() -> FastAPI:
+    """Creates the FastAPI app instance for the Twilio Interface."""
+    app_instance = FastAPI(
+        title="WhatsTasker Twilio Bridge API",
+        description="Handles incoming WhatsApp messages from Twilio and integrates with the backend.",
+        version="1.0.0"
+    )
+
+    # Include calendar routes if needed (same as other interfaces)
+    try:
+        from tools.calendar_tool import router as calendar_router
+        app_instance.include_router(calendar_router, prefix="", tags=["Authentication"])
+        log_info("twilio_interface", "create_twilio_app", "Calendar router included.")
+    except ImportError:
+        log_warning("twilio_interface", "create_twilio_app", "Calendar router not imported, OAuth callback might fail if Twilio bridge is primary.")
+
+
+    @app_instance.post("/twilio/incoming", tags=["Twilio Bridge"])
+    async def incoming_twilio_message(request: Request, background_tasks: BackgroundTasks, From: str = Form(...), Body: str = Form(...)):
+        """
+        Receives incoming WhatsApp messages from Twilio via webhook.
+        Twilio sends data as application/x-www-form-urlencoded.
+        """
+        endpoint_name = "incoming_twilio_message"
+
+        # Validate Twilio signature (optional but recommended for production)
+        if twilio_validator:
+            twilio_signature = request.headers.get("X-Twilio-Signature")
+            # Construct full URL correctly, FastAPI request.url includes query params if any
+            # For POST, Twilio usually doesn't append query params to the webhook URL itself
+            form_params = await request.form() # Get form parameters
+            
+            # Convert ImmutableMultiDict to a regular dict for the validator
+            # The validator expects a dictionary of the POST parameters.
+            post_vars_dict = {key: value for key, value in form_params.items()}
+
+            if not twilio_signature or not twilio_validator.validate(
+                str(request.url), # Full URL as Twilio sees it
+                post_vars_dict,    # The POST parameters
+                twilio_signature
+            ):
+                log_warning("twilio_interface", endpoint_name, "Twilio signature validation FAILED. Rejecting request.")
+                raise HTTPException(status_code=403, detail="Twilio signature validation failed.")
+            # log_info("twilio_interface", endpoint_name, "Twilio signature validation successful.") # Verbose
+        else:
+            log_warning("twilio_interface", endpoint_name, "Twilio validator not initialized. Skipping signature validation (NOT RECOMMENDED FOR PRODUCTION).")
+
+        user_id_from_twilio = From  # e.g., "whatsapp:+1234567890"
+        message_body = Body
+
+        if not user_id_from_twilio or message_body is None: # Body can be empty (e.g. media message with no caption)
+            log_warning("twilio_interface", endpoint_name, f"Received invalid payload from Twilio. From: {user_id_from_twilio}, Body: {message_body}")
+            # Twilio expects an empty TwiML response for success, or an error.
+            # Just returning 400 might be enough, or an empty TwiML <Response/>
+            return FastAPIResponse(content="<Response/>", media_type="application/xml", status_code=400)
+
+        # Offload actual processing to a background task
+        background_tasks.add_task(process_incoming_twilio_message_background, user_id_from_twilio, str(message_body))
+
+        log_info("twilio_interface", endpoint_name, f"ACK for Twilio incoming from {user_id_from_twilio}. Processing in background. Msg: '{str(message_body)[:30]}...'")
+        # Twilio expects an empty TwiML response to acknowledge receipt and stop retrying.
+        return FastAPIResponse(content="<Response/>", media_type="application/xml")
+
+    # No /outgoing or /ack needed for Twilio as send_message calls Twilio API directly
+    # and Twilio's ACK mechanism is the HTTP 200 response to its webhook.
+
+    return app_instance
+
+# Create the FastAPI app instance for this interface
+# main.py should import 'app' from here if Twilio mode is selected
+app = create_twilio_app()
+
+# --- END OF FULL bridge/twilio_interface.py ---
+
+# --- END OF FILE bridge/twilio_interface.py ---
+
+
+
+
+================================================================================
+📄 bridge/whatsapp_interface.py
+================================================================================
+
+# --- START OF FILE bridge/whatsapp_interface.py ---
+
+# --- START OF FULL bridge/whatsapp_interface.py ---
+
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks # <--- ADD BackgroundTasks
+from fastapi.responses import JSONResponse
+# import uvicorn # Keep for potential direct running/debugging, though main.py handles it
+import uuid
+from threading import Lock
+import json
+import re
+
+# Use the central logger
+from tools.logger import log_info, log_error, log_warning
+# Import the central router and its setter function
+from bridge.request_router import handle_incoming_message, set_bridge
+
+# Try importing the calendar router (necessary for OAuth callback)
+try:
+    from tools.calendar_tool import router as calendar_router
+    CALENDAR_ROUTER_IMPORTED = True
+    log_info("whatsapp_interface", "import", "Successfully imported calendar_router.")
+except ImportError:
+    log_error("whatsapp_interface", "import", "Could not import calendar_router from tools.calendar_tool. OAuth callback will fail.")
+    CALENDAR_ROUTER_IMPORTED = False
+    from fastapi import APIRouter
+    calendar_router = APIRouter()
+
+# --- Bridge Definition ---
+outgoing_whatsapp_messages = []
+whatsapp_queue_lock = Lock()
+
+class WhatsAppBridge:
+    def __init__(self, message_queue, lock):
+        self.message_queue = message_queue
+        self.lock = lock
+        log_info("WhatsAppBridge", "__init__", "WhatsApp Bridge initialized for queuing.")
+
+    def send_message(self, user_id: str, message: str):
+        if not user_id or not message:
+             log_warning("WhatsAppBridge", "send_message", f"Attempted to queue empty message or invalid user_id for WhatsApp: {user_id}")
+             return
+
+        formatted_user_id = user_id
+        if re.match(r'^\d+$', user_id):
+            formatted_user_id = f"{user_id}@c.us"
+        elif '@' not in user_id:
+             log_warning("WhatsAppBridge", "send_message", f"User ID '{user_id}' lacks '@' suffix and is not digits. Sending as is, may fail in whatsapp-web.js.")
+
+        outgoing = {
+            "user_id": formatted_user_id,
+            "message": message,
+            "message_id": str(uuid.uuid4())
+        }
+        with self.lock:
+            self.message_queue.append(outgoing)
+        log_info("WhatsAppBridge", "send_message", f"Message for WA user {formatted_user_id} queued (ID: {outgoing['message_id']}). Queue size: {len(self.message_queue)}")
+
+# --- Helper for Background Task ---
+async def process_incoming_message_background(user_id_from_bridge: str, message_body_from_bridge: str):
+    """
+    This function runs in the background, processing the message.
+    It calls the main handler which might take time (LLM calls, etc.).
+    Errors within handle_incoming_message should be logged by it or its sub-components.
+    """
+    fn_name = "process_incoming_message_background"
+    try:
+        log_info("whatsapp_interface", fn_name, f"Background task started for user {user_id_from_bridge}")
+        # The actual processing logic
+        # handle_incoming_message itself handles logging its own errors and sending responses
+        handle_incoming_message(user_id_from_bridge, message_body_from_bridge)
+        log_info("whatsapp_interface", fn_name, f"Background task finished for user {user_id_from_bridge}")
+    except Exception as e:
+        # Log any unexpected error during the background task execution itself
+        # This is a catch-all; specific errors should be handled deeper in the call stack.
+        log_error("whatsapp_interface", fn_name, f"Unhandled exception in background message processing for {user_id_from_bridge}", e, user_id=user_id_from_bridge)
+
+
+def create_whatsapp_app() -> FastAPI:
+    app = FastAPI(
+        title="WhatsTasker WhatsApp Bridge API",
+        description="Handles incoming messages from and outgoing messages to the WhatsApp Web JS bridge.",
+        version="1.0.0"
+    )
+
+    if CALENDAR_ROUTER_IMPORTED:
+        app.include_router(calendar_router, prefix="", tags=["Authentication"])
+        log_info("whatsapp_interface", "create_app", "Calendar router included.")
+    else:
+         log_warning("whatsapp_interface", "create_app", "Calendar router not included.")
+
+    @app.post("/incoming", tags=["WhatsApp Bridge"])
+    async def incoming_whatsapp_message(request: Request, background_tasks: BackgroundTasks): # <--- Inject BackgroundTasks
+        endpoint_name = "incoming_whatsapp_message"
+        try:
+            data = await request.json()
+            user_id = data.get("user_id")
+            message_body = data.get("message")
+
+            if not user_id or message_body is None:
+                log_warning("whatsapp_interface", endpoint_name, f"Received invalid payload: {data}")
+                raise HTTPException(status_code=400, detail="Missing user_id or message")
+
+            # --- Offload the actual processing to a background task ---
+            background_tasks.add_task(process_incoming_message_background, user_id, str(message_body))
+            # ----------------------------------------------------------
+
+            # Return immediate ACK
+            log_info("whatsapp_interface", endpoint_name, f"ACK for incoming from {user_id}. Processing in background. Msg: '{str(message_body)[:30]}...'")
+            return JSONResponse(content={"ack": True}, status_code=200)
+
+        except json.JSONDecodeError:
+            log_error("whatsapp_interface", endpoint_name, "Received non-JSON payload.")
+            raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        except HTTPException as http_exc:
+            # Re-raise HTTPExceptions directly
+            raise http_exc
+        except Exception as e:
+            # Catch-all for unexpected errors during initial request handling (before background task)
+            log_error("whatsapp_interface", endpoint_name, "Error processing incoming WhatsApp message (before background task)", e)
+            raise HTTPException(status_code=500, detail="Internal server error processing message")
+
+    @app.get("/outgoing", tags=["WhatsApp Bridge"])
+    async def get_outgoing_whatsapp_messages():
+        endpoint_name = "get_outgoing_whatsapp_messages"
+        msgs_to_send = []
+        with whatsapp_queue_lock:
+            msgs_to_send = outgoing_whatsapp_messages[:]
+        if msgs_to_send:
+            # Reduce chattiness of this log unless debugging
+            # log_info("whatsapp_interface", endpoint_name, f"Returning {len(msgs_to_send)} messages from WA queue (without clearing).")
+            pass
+        return JSONResponse(content={"messages": msgs_to_send})
+
+    @app.post("/ack", tags=["WhatsApp Bridge"])
+    async def acknowledge_whatsapp_message(request: Request):
+        endpoint_name = "acknowledge_whatsapp_message"
+        message_id = None
+        try:
+            data = await request.json()
+            message_id = data.get("message_id")
+            user_id_from_ack = data.get("user_id") # Get user_id from ACK for better logging
+
+            if not message_id:
+                log_warning("whatsapp_interface", endpoint_name, f"Received ACK without message_id: {data}")
+                raise HTTPException(status_code=400, detail="Missing message_id in ACK payload")
+
+            removed = False
+            with whatsapp_queue_lock:
+                index_to_remove = -1
+                for i, msg in enumerate(outgoing_whatsapp_messages):
+                    if msg.get("message_id") == message_id:
+                        index_to_remove = i
+                        break
+                if index_to_remove != -1:
+                    removed_msg = outgoing_whatsapp_messages.pop(index_to_remove)
+                    removed = True
+                    log_info("whatsapp_interface", endpoint_name, f"WA ACK received and message removed for ID: {message_id}. User: {user_id_from_ack or removed_msg.get('user_id')}. Queue size: {len(outgoing_whatsapp_messages)}")
+                else:
+                    log_warning("whatsapp_interface", endpoint_name, f"WA ACK for unknown/already removed message ID: {message_id}. User: {user_id_from_ack}")
+            return JSONResponse(content={"ack_received": True, "removed": removed})
+        except json.JSONDecodeError:
+            log_error("whatsapp_interface", endpoint_name, "Received non-JSON ACK payload.")
+            raise HTTPException(status_code=400, detail="Invalid JSON payload for ACK")
+        except HTTPException as http_exc:
+            raise http_exc
+        except Exception as e:
+            log_error("whatsapp_interface", endpoint_name, f"Error processing WA ACK for message_id {message_id or 'N/A'}", e)
+            raise HTTPException(status_code=500, detail="Internal server error processing ACK")
+
+    return app
+
+app = create_whatsapp_app()
+
+# --- END OF FULL bridge/whatsapp_interface.py ---
+
+# --- END OF FILE bridge/whatsapp_interface.py ---
+
+
+
+
+================================================================================
+📄 wa_bridge.js
+================================================================================
+
+# --- START OF FILE wa_bridge.js ---
+
+// whatsapp_bridge.js
+
+// --- Dependencies ---
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
+const axios = require('axios');
+
+// --- Configuration ---
+const FASTAPI_BASE_URL = process.env.FASTAPI_BASE_URL || 'http://localhost:8000';
+const POLLING_INTERVAL_MS = parseInt(process.env.POLLING_INTERVAL_MS, 10) || 1000;
+const RETRY_INTERVAL_MS = parseInt(process.env.RETRY_INTERVAL_MS, 10) || 5000;
+const MAX_SEND_RETRIES_PER_MESSAGE = parseInt(process.env.MAX_SEND_RETRIES_PER_MESSAGE, 10) || 3;
+const SEND_RETRY_DELAY_MS = parseInt(process.env.SEND_RETRY_DELAY_MS, 10) || 2000;
+const MAX_ACK_RETRIES = parseInt(process.env.MAX_ACK_RETRIES, 10) || 3;
+const ACK_RETRY_DELAY_MS = parseInt(process.env.ACK_RETRY_DELAY_MS, 10) || 2000;
+const CONSECUTIVE_POLLING_ERROR_THRESHOLD = parseInt(process.env.CONSECUTIVE_POLLING_ERROR_THRESHOLD, 10) || 10;
+const INCOMING_POST_TIMEOUT_MS = parseInt(process.env.INCOMING_POST_TIMEOUT_MS, 10) || 10000;
+
+// --- State Variables ---
+let isClientReady = false;
+let consecutivePollingErrors = 0;
+let clientInstance; // Will hold the client
+let _stopPollingFlag = false;
+
+// --- Custom Logger ---
+function logMessage(level, message, ...optionalParams) {
+    const now = new Date();
+    const timestamp = now.toISOString();
+    const levelStr = level.toUpperCase();
+    const logPrefix = `[${timestamp}] [PID:${process.pid}] [${levelStr}] [wa_bridge]`;
+
+    // Pick the right logging method, defaulting to log
+    let method = console[(level && typeof level === 'string' && console[level.toLowerCase()]) ? level.toLowerCase() : 'log'];
+
+    // Check if last param is Error
+    if (optionalParams.length > 0 && optionalParams[optionalParams.length - 1] instanceof Error) {
+        const err = optionalParams.pop();
+        method(logPrefix, message, ...optionalParams, err.message, err.stack ? `\nStack: ${err.stack}` : '');
+    } else {
+        method(logPrefix, message, ...optionalParams);
+    }
+}
+
+// --- Utility: Sleep Function ---
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// --- Initialize the WhatsApp client ---
+const client = new Client({
+    authStrategy: new LocalAuth({ dataPath: '.wwebjs_auth' }), // For saving the session
+    puppeteer: {
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu'
+        ]
+    },
+});
+clientInstance = client; // Store the client instance globally
+
+// --- Event Handlers ---
+client.on('qr', (qr) => {
+    logMessage('INFO', 'QR Code Received. Scan with WhatsApp:');
+    qrcode.generate(qr, { small: true });
+});
+
+client.on('ready', async () => {
+    logMessage('INFO', `WhatsApp client is ready! Logged in as: ${client.info.pushname} (${client.info.wid.user})`);
+    isClientReady = true;
+    consecutivePollingErrors = 0;
+    if (!_stopPollingFlag) {
+        pollForOutgoingMessages();
+    }
+});
+
+client.on('authenticated', () => {
+    logMessage('INFO', 'WhatsApp client authenticated successfully.');
+});
+
+client.on('auth_failure', msg => {
+    logMessage('ERROR', 'AUTHENTICATION FAILURE:', msg);
+    isClientReady = false;
+    logMessage('ERROR', 'Exiting due to authentication failure.');
+    shutdownBridge('AUTH_FAILURE_EXIT', 1);
+});
+
+client.on('disconnected', (reason) => {
+    logMessage('WARN', 'Client was logged out/disconnected:', reason);
+    isClientReady = false;
+    logMessage('ERROR', 'Exiting due to disconnection.');
+    shutdownBridge('DISCONNECTED_EXIT', 1);
+});
+
+client.on('loading_screen', (percent, message) => {
+    logMessage('INFO', `Loading WhatsApp Web: ${percent}% - ${message}`);
+});
+
+client.on('change_state', state => {
+    logMessage('INFO', `WhatsApp client state changed: ${state}`);
+});
+
+client.on('error', err => {
+    logMessage('ERROR', 'Unhandled WhatsApp client error:', err);
+    if (err.message && (err.message.includes('Protocol error') || err.message.includes('Page crashed'))) {
+        logMessage('ERROR', 'Critical Puppeteer/Protocol error detected. Exiting.');
+        shutdownBridge('PUPPETEER_CRASH_EXIT', 1);
+    }
+});
+
+client.on('message', async (message) => {
+    // logMessage('DEBUG', 'RAW_MESSAGE_EVENT_RECEIVED', 'Type:', message.type, 'From:', message.from, 'Body:', message.body ? message.body.substring(0,30) : 'N/A', 'isStatus:', message.isStatus);
+    if (_stopPollingFlag || !isClientReady) {
+        logMessage('WARN', `Ignoring incoming message from ${message.from} (client not ready or shutting down).`);
+        return;
+    }
+    if (message.isStatus || message.type === 'revoked') {
+        return;
+    }
+
+    try {
+        const chat = await message.getChat();
+        if (chat.isGroup) {
+            return;
+        }
+
+        logMessage('INFO', `Received message from ${message.from}: "${message.body.substring(0, 50)}..."`);
+        await axios.post(`${FASTAPI_BASE_URL}/incoming`, {
+            user_id: message.from,
+            message: message.body
+        }, { timeout: INCOMING_POST_TIMEOUT_MS });
+    } catch (error) {
+        let errMsg = error.message;
+        if (error.response) errMsg = JSON.stringify(error.response.data) || error.message;
+        else if (error.code) errMsg = `${error.code}: ${error.message}`;
+        logMessage('ERROR', `Error sending incoming message from ${message.from} to FastAPI:`, errMsg, error);
+        if (error.code === 'ECONNABORTED' && error.message.includes('timeout')) {
+            logMessage('ERROR', `POST to /incoming for ${message.from} timed out after ${INCOMING_POST_TIMEOUT_MS / 1000}s.`);
+        }
+    }
+});
+
+// --- Polling Function ---
+async function pollForOutgoingMessages() {
+    if (_stopPollingFlag) {
+        logMessage('INFO', 'Polling stopped by flag.');
+        return;
+    }
+    if (!isClientReady) {
+        logMessage('WARN', 'Polling paused: WhatsApp client not ready.');
+        if (!_stopPollingFlag) setTimeout(pollForOutgoingMessages, RETRY_INTERVAL_MS);
+        return;
+    }
+
+    let nextPollDelay = POLLING_INTERVAL_MS;
+
+    try {
+        const response = await axios.get(`${FASTAPI_BASE_URL}/outgoing`, { timeout: 5000 });
+        const messages = response.data.messages;
+        if (consecutivePollingErrors > 0) {
+            logMessage('INFO', `Polling successful. Connection to backend restored. Resetting error count.`);
+        }
+        consecutivePollingErrors = 0;
+
+        if (messages && messages.length > 0) {
+            logMessage('INFO', `Polling: Found ${messages.length} message(s) to send.`);
+            for (const msg of messages) {
+                if (!msg.user_id || msg.message === undefined || !msg.message_id) {
+                    logMessage('WARN', 'Polling: Skipping invalid message structure from backend:', msg);
+                    continue;
+                }
+
+                let sentSuccessfully = false;
+                for (let attempt = 1; attempt <= MAX_SEND_RETRIES_PER_MESSAGE; attempt++) {
+                    if (_stopPollingFlag) break;
+                    try {
+                        logMessage('INFO', `Attempt ${attempt}/${MAX_SEND_RETRIES_PER_MESSAGE} sending to ${msg.user_id} (ID: ${msg.message_id}): "${msg.message.substring(0, 50)}..."`);
+                        await client.sendMessage(msg.user_id, msg.message);
+                        sentSuccessfully = true;
+                        logMessage('INFO', `Message ID ${msg.message_id} sent successfully to ${msg.user_id}.`);
+                        break;
+                    } catch (sendError) {
+                        logMessage('ERROR', `Send attempt ${attempt} for message ID ${msg.message_id} to ${msg.user_id} FAILED:`, sendError.message, sendError);
+                        if (sendError.message && (sendError.message.includes('Session closed') || sendError.message.includes('Page crashed') || sendError.message.includes('invalid wid'))) {
+                            logMessage('ERROR', 'Critical send error. Not retrying this message. Triggering shutdown.');
+                            shutdownBridge('CRITICAL_SEND_ERROR', 1);
+                            return;
+                        }
+                        if (attempt < MAX_SEND_RETRIES_PER_MESSAGE && !_stopPollingFlag) {
+                            logMessage('INFO', `Waiting ${SEND_RETRY_DELAY_MS / 1000}s before next send attempt...`);
+                            await sleep(SEND_RETRY_DELAY_MS);
+                        } else if (attempt >= MAX_SEND_RETRIES_PER_MESSAGE) {
+                            logMessage('ERROR', `All ${MAX_SEND_RETRIES_PER_MESSAGE} send attempts FAILED for message ID ${msg.message_id}.`);
+                        }
+                    }
+                }
+
+                if (_stopPollingFlag) break;
+
+                if (sentSuccessfully) {
+                    let ackSentSuccessfully = false;
+                    for (let ackAttempt = 1; ackAttempt <= MAX_ACK_RETRIES; ackAttempt++) {
+                        if (_stopPollingFlag) break;
+                        try {
+                            await axios.post(`${FASTAPI_BASE_URL}/ack`, {
+                                user_id: msg.user_id,
+                                message_id: msg.message_id
+                            }, { timeout: 3000 });
+                            ackSentSuccessfully = true;
+                            logMessage('INFO', `ACK sent successfully for message ID: ${msg.message_id}`);
+                            break;
+                        } catch (ackError) {
+                            logMessage('ERROR', `ACK attempt ${ackAttempt} for message ID ${msg.message_id} FAILED:`, (ackError.response ? JSON.stringify(ackError.response.data) : ackError.message), ackError);
+                            if (ackAttempt < MAX_ACK_RETRIES && !_stopPollingFlag) {
+                                logMessage('INFO', `Waiting ${ACK_RETRY_DELAY_MS / 1000}s before next ACK attempt...`);
+                                await sleep(ACK_RETRY_DELAY_MS);
+                            } else if (ackAttempt >= MAX_ACK_RETRIES) {
+                                logMessage('CRITICAL', `All ${MAX_ACK_RETRIES} ACK attempts FAILED for message ID ${msg.message_id}. Message sent but backend may not know.`);
+                            }
+                        }
+                    }
+                }
+                 if (_stopPollingFlag) break;
+            }
+        }
+    } catch (error) {
+        consecutivePollingErrors++;
+        let errMsg = error.message;
+        if (error.response) errMsg = `${error.response.status}: ${JSON.stringify(error.response.data) || error.message}`;
+        else if (error.code) errMsg = `${error.code}: ${error.message}`;
+        logMessage('ERROR', `Polling Error (Attempt ${consecutivePollingErrors}/${CONSECUTIVE_POLLING_ERROR_THRESHOLD}):`, errMsg, error);
+
+        if (error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET' || error.code === 'ENOTFOUND' || (error.response && error.response.status >= 500)) {
+            nextPollDelay = RETRY_INTERVAL_MS;
+        } else if (error.code === 'ECONNABORTED' || (error.isAxiosError && error.message.toLowerCase().includes('timeout'))) {
+            nextPollDelay = POLLING_INTERVAL_MS * 2;
+        }
+
+        if (consecutivePollingErrors >= CONSECUTIVE_POLLING_ERROR_THRESHOLD) {
+            logMessage('CRITICAL', `Reached ${CONSECUTIVE_POLLING_ERROR_THRESHOLD} consecutive polling errors. Triggering shutdown.`);
+            shutdownBridge('MAX_POLLING_ERRORS', 1);
+            return;
+        }
+    } finally {
+        if (isClientReady && !_stopPollingFlag) {
+            setTimeout(pollForOutgoingMessages, nextPollDelay);
+        } else if (!isClientReady && !_stopPollingFlag) {
+            setTimeout(pollForOutgoingMessages, RETRY_INTERVAL_MS);
+        }
+    }
+}
+
+// --- Initialization ---
+logMessage('INFO', `WhatsApp Bridge script starting. Target Backend: ${FASTAPI_BASE_URL}`);
+logMessage('INFO', 'Initializing WhatsApp client (DEBUG: About to call client.initialize())...');
+client.initialize()
+    .then(() => {
+        logMessage('INFO', 'DEBUG: client.initialize() promise resolved.');
+    })
+    .catch(err => {
+        logMessage('ERROR', 'CRITICAL_INIT_FAILURE', 'Client.initialize() explicitly caught an error:', err.message, err.stack ? `\nStack: ${err.stack}` : '', err);
+        shutdownBridge('INIT_PROMISE_REJECT', 1);
+    });
+
+// --- Graceful Shutdown Handling (with enhanced logging) ---
+async function shutdownBridge(signal, exitCode = 0) {
+    if (_stopPollingFlag) {
+        logMessage('INFO', 'Shutdown already in progress.');
+        return;
+    }
+    _stopPollingFlag = true;
+    logMessage('WARN', `Received ${signal}, initiating graceful shutdown...`);
+    isClientReady = false;
+
+    if (clientInstance && typeof clientInstance.destroy === 'function') {
+        logMessage('INFO', 'SHUTDOWN_DEBUG: clientInstance IS VALID and has a destroy function.');
+        logMessage('INFO', 'SHUTDOWN_DEBUG: About to call client.destroy()...');
+        try {
+            logMessage('INFO', 'SHUTDOWN_DEBUG: INSIDE try block for client.destroy().');
+            await clientInstance.destroy();
+            logMessage('INFO', 'SHUTDOWN_DEBUG: client.destroy() promise RESOLVED.');
+            logMessage('INFO', 'WhatsApp client session destroyed.'); // Original log
+        } catch (e) {
+            logMessage('ERROR', 'SHUTDOWN_DEBUG: client.destroy() promise REJECTED with error:', e.message, e.stack ? `\nStack: ${e.stack}` : '', e);
+            logMessage('ERROR', 'Error destroying client during shutdown:', e.message, e); // Original log
+        }
+        logMessage('INFO', 'SHUTDOWN_DEBUG: AFTER try/catch for client.destroy().');
+    } else {
+        if (!clientInstance) {
+            logMessage('WARN', 'SHUTDOWN_DEBUG: clientInstance is NULL or UNDEFINED at shutdown.');
+        } else {
+            logMessage('WARN', 'SHUTDOWN_DEBUG: clientInstance.destroy is NOT a function at shutdown.');
+        }
+        logMessage('WARN', 'Client instance not available or destroy method missing for shutdown.'); // Original log
+    }
+    // await sleep(1000); // You can uncomment this for testing if you suspect a file flush issue
+    logMessage('INFO', `Bridge shutdown complete. Exiting with code ${exitCode}.`);
+    process.exit(exitCode);
+}
+
+process.on('SIGINT', () => shutdownBridge('SIGINT'));
+process.on('SIGTERM', () => shutdownBridge('SIGTERM'));
+process.on('SIGQUIT', () => shutdownBridge('SIGQUIT'));
+process.on('uncaughtException', (error) => {
+    logMessage('CRITICAL', 'Uncaught Exception:', error.message, error);
+    shutdownBridge('UNCAUGHT_EXCEPTION', 1);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    logMessage('CRITICAL', 'Unhandled Rejection at:', promise, 'reason:', reason instanceof Error ? reason.message : reason, reason instanceof Error ? reason : undefined);
+    shutdownBridge('UNHANDLED_REJECTION', 1);
+});
+
+// Polling starts via the 'ready' event handler
+
+# --- END OF FILE wa_bridge.js ---
+
+
+
+
+================================================================================
+📄 config/prompts.yaml
+================================================================================
+
+# --- START OF FILE config/prompts.yaml ---
+
+# config/prompts.yaml
+
+kairo_agent_system_prompt: |
+  You are Kairo, a personal productivity coach. Your persona is supportive, encouraging, and slightly informal. You are non-judgmental; a missed task is an opportunity to re-plan, not a failure.
+
+  You will ALWAYS receive the user's full context in every turn. It includes their preferences and their entire list of items (tasks and reminders). Your primary job is to reason over this context to provide helpful, conversational responses and use tools when necessary.
+
+  --- CORE BEHAVIORS ---
+
+   1.  **Onboarding Logic:**
+      - IF the user's `status` in their preferences is 'onboarding', your ONLY goal is to get them to 'active'.
+      - Examine their `preferences` object for the next `null` value. The sequence is: `name` (if it's "friend"), then `timezone`.
+      - Ask one friendly question at a time to get the missing information.
+      - Use the `update_user_preferences` tool to save their answer.
+      - **NEW CONFIRMATION STEP:**
+        - Once `name` AND `timezone` are BOTH filled, your next step is to present a summary of the settings to the user for confirmation.
+        - Formulate a message in their language that shows them their Name, Timezone, Language, and Work Days.
+        - Ask them if these settings look correct.
+      - **FINALIZATION:**
+        - If the user confirms the settings are correct (e.g., "yes", "looks good"), your final action MUST be to call the `finalize_onboarding` tool.
+        - If the user says something is wrong, ask them what they'd like to change and use `update_user_preferences` to fix it, then present the summary again.
+
+  2.  **Daily Interaction Logic (when status is 'active'):**
+      - **Item Creation:** If the user wants to add something:
+        - If it has a specific time (e.g., "remind me at 5pm", "tomorrow 10:00"), use the `create_reminder` tool.
+        - Otherwise, use the `create_task` tool.
+      - **Item Updates:** If the user wants to change or complete an item:
+        - First, identify the `item_id` of the item they are referring to from the provided `items` list in their context.
+        - Use the `update_item` tool with the correct `item_id` and an `updates` dictionary (e.g., `{"status": "completed"}`).
+      - **Listing/Querying:** If the user asks what they have to do, DO NOT use a tool. Simply analyze the `items` list provided in the context and formulate a friendly, natural language response based on their query.
+
+  3.  **System Trigger Logic:**
+      - If the user's message is a system trigger (e.g., `{"trigger": "morning_muster"}`), you MUST initiate the corresponding ritual.
+      - **Morning Muster:** Greet the user, list any incomplete tasks, and your main goal is to ask them: "What is your Most Important Task (MIT) for today?".
+      - **Evening Reflection:** Greet the user, ask about their day (especially their MIT), offer guilt-free rescheduling for incomplete items, and end with a "brain dump" prompt.
+
+  4.  **Language Mandate:**
+      - You MUST respond in the language specified in the user's `language` preference.
+
+# --- END OF FILE config/prompts.yaml ---
+
+
+
+
+================================================================================
+📄 config/messages.yaml
+================================================================================
+
+# --- START OF FILE config/messages.yaml ---
+
+# config/messages.yaml
+
+# --- Message 1: The Initial Welcome (for 'new' users) ---
+initial_welcome_message:
+  en: |
+    Hello! 👋 I'm Kairo, your personal productivity coach.
+
+    I can help you build focus and momentum with simple daily rituals, right here in WhatsApp.
+
+    Ready to get set up in under a minute? (yes/no)
+  he: |
+    שלום! 👋 אני קאירו, מאמן הפרודוקטיביות האישי שלך.
+
+    אני יכול לעזור לך לנהל את המשימות שלך, ולבנות לך הרגלים שיעזרו לפרודוקטיביות שלך, כאן בוואטסאפ.
+
+    שנתחיל?
+
+# --- Message 2: Onboarding Completion (for 'active' users) ---
+onboarding_completion_message:
+  en: |
+    Great, you're all set! ✅
+
+    Here’s the best way to start:
+    1.  **Capture Everything:** Anytime a task comes to mind, just send it to me. e.g., "remind me to call the bank at 4pm" or "add task to prepare meeting notes".
+    2.  **Trust the Rituals:** I'll check in with you every morning and evening to help you plan and reflect.
+
+    What's the very first thing on your mind?
+  he: |
+    מעולה, הכל מוכן! ✅
+
+    הנה הדרך הכי טובה להתחיל:
+    1.  **תפוס/י הכל:** בכל פעם שמשימה עולה לך לראש, פשוט שלח/י לי אותה. למשל: "תזכר לי להתקשר לבנק ב-16:00" או "הוסף משימה להכין סיכום פגישה".
+    2.  **סמוך/י על התהליך:** אני אצור איתך קשר כל בוקר וערב כדי לעזור לך לתכנן ולסכם את היום.
+
+    רוצה להוסיף את המשימה הראשונה שיש לך?
+
+# --- Other System Messages ---
+generic_error_message:
+  en: "Sorry, something went wrong on my end. Please try again."
+  he: "מצטער, משהו השתבש בצד שלי. אנא נסה/י שוב."
+
+intent_clarify_message:
+  en: "Sorry, I didn't quite understand that. Could you please rephrase?"
+  he: "מצטער, לא כל כך הבנתי. אפשר לנסח מחדש?"
+
+# --- END OF FILE config/messages.yaml ---
+
+
+
+
+================================================================================
+📄 config/settings.yaml
+================================================================================
+
+# --- START OF FILE config/settings.yaml ---
+
+
+
+# --- END OF FILE config/settings.yaml ---
+
+
+
+
+================================================================================
+📄 tools/logger.py
+================================================================================
+
+# --- START OF FILE tools/logger.py ---
+
+# tools/logger.py
+import os
+import pytz
+from datetime import datetime, timezone
+import traceback
+
+# This module will now attempt to import the DB logging function when first used.
+_activity_db_log_func = None
+ACTIVITY_DB_IMPORTED = False
+
+# --- Configuration ---
+DEBUG_MODE = os.getenv("DEBUG_MODE", "True").lower() in ('true', '1', 't')
+LOG_DIR = "logs"
+LOG_FILE = os.path.join(LOG_DIR, "kairo_app.log")
+LOG_TIMEZONE_STR = "Asia/Jerusalem"
+
+try:
+    LOG_TIMEZONE_PYTZ = pytz.timezone(LOG_TIMEZONE_STR)
+except pytz.UnknownTimeZoneError:
+    print(f"[ERROR] [logger:init] Unknown Timezone '{LOG_TIMEZONE_STR}'. Defaulting to UTC.")
+    LOG_TIMEZONE_PYTZ = pytz.utc
+
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+except OSError as e:
+    print(f"[{datetime.now(timezone.utc).isoformat()}] [ERROR] [logger:init] Failed to create log directory '{LOG_DIR}': {e}")
+
+# --- Helper Functions ---
+def _timestamp_utc_iso():
+    """Returns current time in UTC ISO format for DB logging."""
+    return datetime.now(timezone.utc).isoformat()
+
+def _format_log_entry(level: str, module: str, func: str, message: str):
+    """Formats a log entry with the configured local timezone."""
+    ts_aware = datetime.now(LOG_TIMEZONE_PYTZ)
+    ts_formatted = ts_aware.strftime("%Y-%m-%d %H:%M:%S %Z")
+    return f"[{ts_formatted}] [{level.upper()}] [{module}:{func}] {message}"
+
+def _try_log_to_db(level: str, module: str, function: str, message: str, traceback_str: str | None = None, timestamp_utc_iso: str | None = None):
+    """Internal helper to dynamically import and call the DB logging function."""
+    global _activity_db_log_func, ACTIVITY_DB_IMPORTED
+    if not ACTIVITY_DB_IMPORTED:
+        try:
+            from tools.activity_db import log_system_event
+            _activity_db_log_func = log_system_event
+            ACTIVITY_DB_IMPORTED = True
+        except ImportError:
+            _activity_db_log_func = None
+
+    if _activity_db_log_func:
+        try:
+            db_ts = timestamp_utc_iso or _timestamp_utc_iso()
+            _activity_db_log_func(
+                level=level.upper(),
+                module=module,
+                function=function,
+                message=message,
+                traceback_str=traceback_str,
+                timestamp=db_ts
+            )
+        except Exception as db_log_err:
+            print(f"CRITICAL DB LOG FAIL: {db_log_err} | Original Msg: {message}")
+
+# --- Public Logging Functions ---
+def log_info(module: str, func: str, message: str):
+    """Logs informational messages to the console in debug mode."""
+    if DEBUG_MODE:
+        print(_format_log_entry("INFO", module, func, message))
+
+def log_error(module: str, func: str, message: str, exception: Exception | None = None):
+    """Logs error messages to console/file and attempts to log to the database."""
+    level = "ERROR"
+    traceback_str = traceback.format_exc() if exception else None
+    entry = _format_log_entry(level, module, func, message)
+    
+    print(entry)
+    if traceback_str:
+        print(traceback_str)
+    
+    _try_log_to_db(level, module, func, message, traceback_str, _timestamp_utc_iso())
+
+def log_warning(module: str, func: str, message: str):
+    """Logs warning messages to console/file and attempts to log to the database."""
+    level = "WARNING"
+    entry = _format_log_entry(level, module, func, message)
+    print(entry)
+    _try_log_to_db(level, module, func, message, None, _timestamp_utc_iso())
+
+# --- END OF FILE tools/logger.py ---
+
+
+
+
+================================================================================
+📄 gps.py
+================================================================================
+
+# --- START OF FILE gps.py ---
+
+# gps.py - Generate Project Snapshot for Kairo
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+
+# --- Configuration ---
+# This list contains only the files required for the final Kairo MVP.
+# Obsolete files (GCal stack, old data layer, multiple agents) have been removed.
+FILES_TO_DUMP = [
+    # Documentation & Root Files
+    "README.md",
+    "requirements.txt",
+    "package.json",
+    ".gitignore",
+    ".env.example",
+
+    # Core Application & Logic
+    "main.py",
+    "agents/kairo_agent.py",
+    "agents/tool_definitions.py",
+    "bridge/request_router.py",
+    "services/agent_state_manager.py",
+    "services/llm_interface.py",
+    "services/notification_service.py",
+    "services/scheduler_service.py",
+    "services/task_manager.py",
+    "services/cheats.py",
+    "services/shared_resources.py", # New centralized loader
+
+    # Data & User Management
+    "data/data_manager.py", # New single data layer
+    "users/user_manager.py",
+
+    # Bridge Interfaces
+    "bridge/cli_interface.py",
+    "bridge/twilio_interface.py",
+    "bridge/whatsapp_interface.py",
+    "wa_bridge.js",
+
+    # Configuration Files
+    "config/prompts.yaml",
+    "config/messages.yaml",
+    "config/settings.yaml",
+
+    # Utilities & Scripts
+    "tools/logger.py",
+    "monitor_kairo.sh", # Renamed script
+    "stop_kairo.sh",    # Renamed script
+    "gps.py", # Include the script itself
+    "session_viewer.py", # Include our new debug tool
+
+    # Testing & Development
+    "tests/mock_browser_chat.py",
+    "tests/templates/browser_chat.html",
+]
+
+# Output filename for the new project snapshot
+OUTPUT_FILENAME_PATTERN = "kairo_mvp_snapshot.txt"
+
+# Separator for the dump file
+SEPARATOR = "=" * 80
+# --- End Configuration ---
+
+def generate_dump(output_filename: str, files_to_include: list):
+    """Generates the project dump file."""
+    project_root = Path(__file__).parent
+    dump_content = []
+    timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Header for the dump file
+    dump_content.append(f"# Kairo Project Code Dump (v1.0 MVP)")
+    dump_content.append(f"# Generated: {timestamp_str}")
+    dump_content.append("\n")
+
+    processed_files = 0
+    missing_files = []
+
+    print(f"--- Generating snapshot: {output_filename} ---")
+    for relative_path_str in files_to_include:
+        relative_path = Path(relative_path_str)
+        full_path = project_root / relative_path
+
+        if full_path.is_file():
+            try:
+                content = full_path.read_text(encoding='utf-8', errors='replace')
+                dump_content.append(SEPARATOR)
+                header_path = relative_path.as_posix()
+                dump_content.append(f"📄 {header_path}")
+                dump_content.append(SEPARATOR)
+                dump_content.append(f"\n# --- START OF FILE {header_path} ---\n")
+                dump_content.append(content)
+                dump_content.append(f"\n# --- END OF FILE {header_path} ---\n")
+                dump_content.append("\n\n")
+                processed_files += 1
+                print(f"✅ Included: {header_path}")
+            except Exception as e:
+                print(f"❌ Error reading {relative_path_str}: {e}")
+                missing_files.append(f"{relative_path_str} (Read Error: {e})")
+        else:
+            print(f"⚠️  Skipped (Not Found): {relative_path_str}")
+            missing_files.append(f"{relative_path_str} (Not Found)")
+
+    # Note about Node.js dependencies
+    dump_content.append(SEPARATOR)
+    dump_content.append("📦 Node.js Dependencies Note")
+    dump_content.append(SEPARATOR)
+    dump_content.append("\n# The 'package.json' file lists Node.js dependencies.")
+    dump_content.append("# Run 'npm install' in the project root to install these dependencies.")
+    dump_content.append("# The 'node_modules/' directory is NOT included in this dump.\n\n")
+
+    try:
+        output_path = project_root / output_filename
+        output_path.write_text("\n".join(dump_content), encoding='utf-8')
+        print("-" * 30)
+        print(f"✅ Dump generated successfully: {output_filename}")
+        print(f"   Files included: {processed_files}")
+        if missing_files:
+            print(f"   ⚠️ Files skipped: {len(missing_files)}")
+            for missing in missing_files:
+                print(f"      - {missing}")
+    except Exception as e:
+        print("-" * 30)
+        print(f"❌ Error writing dump file {output_filename}: {e}")
+
+if __name__ == "__main__":
+    generate_dump(OUTPUT_FILENAME_PATTERN, FILES_TO_DUMP)
+
+# --- END OF FILE gps.py ---
+
+
+
+
+================================================================================
+📄 session_viewer.py
+================================================================================
+
+# --- START OF FILE session_viewer.py ---
+
+# session_viewer.py
+import sqlite3
+import json
+import argparse
+from datetime import datetime, timezone
+import pytz
+from typing import List, Dict
+
+# --- Configuration ---
+DB_DIR = "data"
+# This allows the script to work with both _cli and non-suffixed DBs
+DB_SUFFIX = "_cli" # Set to "" for production, or pass as an argument
+DB_FILE_PATH = "" # Will be set by arguments
+
+# --- Helper Functions ---
+def _format_timestamp(ts_str: str, local_tz: pytz.BaseTzInfo) -> str:
+    """Converts a UTC ISO string to a user-friendly local time string."""
+    if not ts_str:
+        return " " * 19
+    try:
+        utc_dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+        local_dt = utc_dt.astimezone(local_tz)
+        return local_dt.strftime('%Y-%m-%d %H:%M:%S')
+    except (ValueError, TypeError):
+        return ts_str[:19] # Fallback to show raw timestamp
+
+def _pretty_print_json(json_str: str) -> str:
+    """Formats a JSON string with indentation for readability."""
+    try:
+        obj = json.loads(json_str)
+        return json.dumps(obj, indent=2, ensure_ascii=False)
+    except (json.JSONDecodeError, TypeError):
+        return json_str # Return as is if not valid JSON
+
+# --- Main Logic ---
+def get_user_session(db_path: str, user_id: str, local_tz: pytz.BaseTzInfo) -> None:
+    """Queries all relevant tables for a user's session and prints a chronological log."""
+    
+    all_events = []
+    
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # 1. Fetch messages
+            cursor.execute("SELECT * FROM messages WHERE user_id = ?", (user_id,))
+            for row in cursor.fetchall():
+                all_events.append({
+                    "timestamp": row["timestamp"],
+                    "type": "MESSAGE",
+                    "data": dict(row)
+                })
+
+            # 2. Fetch LLM tool activity
+            cursor.execute("SELECT * FROM llm_activity WHERE user_id = ?", (user_id,))
+            for row in cursor.fetchall():
+                all_events.append({
+                    "timestamp": row["timestamp"],
+                    "type": "TOOL_CALL",
+                    "data": dict(row)
+                })
+
+            # 3. Fetch system logs (errors/warnings)
+            cursor.execute("SELECT * FROM system_logs") # Get all, then we'll filter
+            for row in cursor.fetchall():
+                 # For system logs, we can't always guarantee a user_id context, so we show all for now
+                 # A more advanced version could try to correlate by timestamp
+                 all_events.append({
+                    "timestamp": row["timestamp"],
+                    "type": f"SYS_{row['level']}",
+                    "data": dict(row)
+                })
+
+    except sqlite3.Error as e:
+        print(f"❌ Database Error: Could not connect to or query '{db_path}'.\n   Reason: {e}")
+        return
+
+    if not all_events:
+        print(f"No activity found for user ID: {user_id}")
+        return
+
+    # Sort all collected events chronologically
+    all_events.sorted_events = sorted(all_events, key=lambda x: x["timestamp"])
+
+    # --- Print the formatted session log ---
+    print("\n" + "="*80)
+    print(f"Kairo Session Log for User: {user_id}")
+    print(f"Timezone: {local_tz.zone}")
+    print("="*80 + "\n")
+
+    for event in all_events.sorted_events:
+        ts = _format_timestamp(event["timestamp"], local_tz)
+        event_type = event["type"]
+        data = event["data"]
+
+        if event_type == "MESSAGE":
+            role = data['role'].upper()
+            content = data['content']
+            if role == 'USER':
+                print(f"[{ts}] 👤 \033[92m{role}:\033[0m {content}") # Green
+            else: # ASSISTANT
+                print(f"[{ts}] 🤖 \033[94m{role}:\033[0m {content}") # Blue
+
+        elif event_type == "TOOL_CALL":
+            tool_name = data['tool_name']
+            print(f"[{ts}] ⚙️  \033[93mTOOL CALL: {tool_name}\033[0m")
+            print("   ▶️  Args:")
+            print(_pretty_print_json(data['tool_args_json']))
+            print("   ◀️  Result:")
+            print(_pretty_print_json(data['tool_result_json']))
+        
+        elif event_type.startswith("SYS_"):
+            level = data['level']
+            color = '\033[91m' if level == 'ERROR' else '\033[93m' # Red for Error, Yellow for Warning
+            print(f"[{ts}] ⚠️  {color}{level} in {data['module']}:{data['function']}\033[0m")
+            print(f"   - {data['message']}")
+            if data['traceback']:
+                print(f"   - Traceback: {data['traceback']}")
+
+    print("\n" + "="*80)
+    print("End of session log.")
+    print("="*80)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="View a user's chronological session from the Kairo database.")
+    parser.add_argument("user_id", type=str, help="The user ID to retrieve the session for.")
+    parser.add_argument("--mode", type=str, choices=['cli', 'prod'], default='cli', help="The database mode ('cli' or 'prod'). Defaults to 'cli'.")
+    parser.add_argument("--tz", type=str, default="Asia/Jerusalem", help="Your local timezone for displaying timestamps, e.g., 'America/New_York'. Defaults to 'Asia/Jerusalem'.")
+    
+    args = parser.parse_args()
+    
+    db_suffix = "_cli" if args.mode == 'cli' else ""
+    db_path = os.path.join(DB_DIR, f"kairo_activity{db_suffix}.db")
+    
+    try:
+        local_timezone = pytz.timezone(args.tz)
+    except pytz.UnknownTimeZoneError:
+        print(f"❌ Unknown timezone '{args.tz}'. Please use a valid TZ database name.")
+        exit(1)
+
+    get_user_session(db_path, args.user_id, local_timezone)
+
+# --- END OF FILE session_viewer.py ---
+
+
+
+
+================================================================================
+📄 tests/mock_browser_chat.py
+================================================================================
+
+# --- START OF FILE tests/mock_browser_chat.py ---
+
+# tests/mock_browser_chat.py
+import os
+import requests
+import json
+import time
+import threading
+from flask import Flask, render_template, request, jsonify
+from collections import deque
+from datetime import datetime
+from dotenv import load_dotenv
+import logging
+import traceback
+
+# --- Configuration ---
+load_dotenv()
+VIEWER_PORT = int(os.getenv("VIEWER_PORT", "5001"))
+MAX_MESSAGES = 100
+MAIN_BACKEND_PORT = os.getenv("PORT", "8001")
+MAIN_BACKEND_BASE_URL = f"http://localhost:{MAIN_BACKEND_PORT}"
+MAIN_BACKEND_OUTGOING_URL = f"{MAIN_BACKEND_BASE_URL}/outgoing"
+MAIN_BACKEND_ACK_URL = f"{MAIN_BACKEND_BASE_URL}/ack"
+MOCK_USER_ID = "1234"
+
+# --- State ---
+message_store_bot = deque(maxlen=MAX_MESSAGES)
+message_lock = threading.Lock()
+_stop_polling_event = threading.Event()
+# --- NEW: Shared status variable ---
+backend_status = "CONNECTING"
+status_lock = threading.Lock()
+
+# --- Flask App Setup ---
+app = Flask(__name__, template_folder=os.path.join(os.path.dirname(__file__), 'templates'))
+app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
+
+def mock_log(level, component, message):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    print(f"[{timestamp}] [{level.upper()}] [MockChat:{component}] {message}")
+
+# --- MODIFIED: Background Polling Function ---
+def poll_main_backend():
+    global backend_status
+    component_name = "PollingThread"
+    mock_log("info", component_name, f"STARTED. Polling {MAIN_BACKEND_OUTGOING_URL}")
+    session = requests.Session()
+    
+    while not _stop_polling_event.is_set():
+        try:
+            with status_lock:
+                if backend_status != 'CONNECTED':
+                    backend_status = 'CONNECTING'
+                    
+            res = session.get(MAIN_BACKEND_OUTGOING_URL, timeout=5)
+            res.raise_for_status()
+
+            with status_lock:
+                if backend_status != 'CONNECTED':
+                    mock_log("info", component_name, "Connection to Kairo backend RESTORED.")
+                backend_status = 'CONNECTED'
+
+            data = res.json()
+            # (Message processing logic is the same)
+            all_backend_messages = data.get("messages", [])
+            if all_backend_messages:
+                user_specific_messages = [msg for msg in all_backend_messages if msg.get('user_id') == MOCK_USER_ID]
+                if user_specific_messages:
+                    for msg_data in reversed(user_specific_messages):
+                        with message_lock:
+                            message_store_bot.appendleft({
+                                "sender": "bot", "timestamp": datetime.now().strftime("%H:%M:%S"),
+                                "content": msg_data.get('message'), "id": msg_data.get('message_id')
+                            })
+                        session.post(MAIN_BACKEND_ACK_URL, json={"message_id": msg_data.get('message_id'), "user_id": MOCK_USER_ID}, timeout=3)
+
+        except requests.exceptions.RequestException:
+            with status_lock:
+                if backend_status == 'CONNECTED':
+                    mock_log("error", component_name, f"Connection to Kairo backend LOST. Retrying...")
+                backend_status = 'DISCONNECTED'
+        
+        except Exception as e:
+            mock_log("critical", component_name, f"UNEXPECTED POLLING ERROR: {e}")
+            with status_lock:
+                backend_status = 'DISCONNECTED'
+        
+        if _stop_polling_event.wait(timeout=2): # Poll every 2 seconds
+            break
+
+    mock_log("info", component_name, "STOPPED.")
+
+# --- Flask Routes ---
+@app.route('/')
+def index():
+    return render_template('browser_chat.html', title=f"Kairo Mock Chat (User: {MOCK_USER_ID})")
+
+# --- NEW: Status Endpoint ---
+@app.route('/get_status')
+def get_status_route():
+    global backend_status
+    with status_lock:
+        return jsonify({"status": backend_status})
+
+@app.route('/send_message', methods=['POST'])
+def send_message_route():
+    # (This route's logic remains the same as our last version)
+    try:
+        data = request.get_json()
+        message_text = data.get('message')
+        if not message_text: return jsonify({"status": "error", "message": "No message"}), 400
+        backend_payload = {"user_id": MOCK_USER_ID, "message": message_text}
+        try:
+            response = requests.post(f"{MAIN_BACKEND_BASE_URL}/incoming", json=backend_payload, timeout=120)
+            response.raise_for_status()
+            return jsonify({"status": "ok"}), 200
+        except requests.exceptions.RequestException:
+            return jsonify({"status": "error", "message": "Could not connect to Kairo backend."}), 503
+    except Exception:
+        return jsonify({"status": "error", "message": "Internal mock server error"}), 500
+
+@app.route('/get_messages')
+def get_messages_route():
+    with message_lock:
+        return jsonify({"messages": list(message_store_bot)})
+
+# --- Main Execution ---
+if __name__ == '__main__':
+    mock_log("info", "Main", "--- Starting Kairo Mock Browser Chat Interface ---")
+    user_input_id_raw = input(f"Enter User ID to simulate (leave blank for '{MOCK_USER_ID}'): ").strip()
+    if user_input_id_raw: MOCK_USER_ID = user_input_id_raw
+    mock_log("info", "Main", f"Simulating as User ID: {MOCK_USER_ID}")
+    
+    polling_thread = threading.Thread(target=poll_main_backend, daemon=True)
+    polling_thread.start()
+
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR)
+
+    try:
+        app.run(host='0.0.0.0', port=VIEWER_PORT, debug=False, use_reloader=False)
+    except Exception as e:
+        mock_log("critical", "Main", f"Flask server crashed: {e}")
+    finally:
+        _stop_polling_event.set()
+        polling_thread.join(timeout=2)
+        mock_log("info", "Main", "Mock browser chat server has shut down.")
+
+# --- END OF FILE tests/mock_browser_chat.py ---
+
+
+
+
+================================================================================
+📄 tests/templates/browser_chat.html
+================================================================================
+
+# --- START OF FILE tests/templates/browser_chat.html ---
+
+<!-- tests/templates/browser_chat.html -->
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }}</title>
+    <style>
+        /* Styles remain the same */
+        body { font-family: sans-serif; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; background-color: #f4f4f4; }
+        h1 { text-align: center; color: #333; margin: 10px 0; }
+        #chat-container { flex-grow: 1; border: 1px solid #ccc; background-color: #fff; margin: 0 10px 10px 10px; overflow-y: auto; padding: 10px; }
+        #messages { list-style-type: none; padding: 0; margin: 0; }
+        #messages li { margin-bottom: 10px; padding: 8px; border-radius: 5px; word-wrap: break-word; max-width: 80%; clear: both; }
+        #messages li.user { background-color: #dcf8c6; margin-left: auto; float: right; text-align: right; }
+        #messages li.bot { background-color: #e0e0e0; margin-right: auto; float: left; text-align: left; }
+        #messages li.system { background-color: #f0e68c; margin-left: auto; margin-right: auto; text-align: center; font-style: italic; color: #555; max-width: 90%; float: none; font-size: 0.9em;}
+        #messages li[dir="rtl"] { text-align: right; }
+        #messages li[dir="ltr"] { text-align: left; }
+        .msg-meta { font-size: 0.8em; color: #888; display: block; margin-top: 4px; }
+        .msg-content { white-space: pre-wrap; }
+        #input-area { display: flex; padding: 10px; border-top: 1px solid #ccc; background-color: #eee; }
+        #messageInput { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 3px; margin-right: 5px;}
+        #sendButton { padding: 10px 15px; cursor: pointer; }
+        #controls { text-align: right; padding: 0 10px 5px 0; font-size: 0.8em; }
+    </style>
+</head>
+<body>
+
+    <h1>{{ title }}</h1>
+    <div id="controls">
+        <button id="clearButton" title="Clear messages displayed in this browser window">Clear Display</button>
+    </div>
+
+    <div id="chat-container">
+        <ul id="messages">
+            <!-- Messages will be added dynamically -->
+        </ul>
+    </div>
+
+    <div id="input-area">
+        <input type="text" id="messageInput" placeholder="Type your message..." autocomplete="off">
+        <button id="sendButton">Send</button>
+    </div>
+
+    <script>
+        const messagesContainer = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        const clearButton = document.getElementById('clearButton');
+
+        let displayedMessageIds = new Set(); // Track IDs shown in browser
+        let isSending = false;
+        let isFetching = false;
+
+        function containsHebrew(text) {
+            if (!text) return false;
+            return /[\u0590-\u05FF]/.test(text);
+        }
+
+        // Function to add a single message object to the display UL
+        function addMessageToDisplay(msg) {
+             if (!msg || !msg.id || displayedMessageIds.has(msg.id)) {
+                 return false; // Don't add if no message, no ID, or already displayed
+             }
+
+             const li = document.createElement('li');
+             const senderClass = msg.sender || 'system';
+             li.classList.add(senderClass);
+
+             const isRtl = containsHebrew(msg.content);
+             li.setAttribute('dir', isRtl ? 'rtl' : 'ltr');
+
+             const contentSpan = document.createElement('span');
+             contentSpan.className = 'msg-content';
+             contentSpan.textContent = msg.content;
+
+             const metaSpan = document.createElement('span');
+             metaSpan.className = 'msg-meta';
+             // Use sender from message object now
+             metaSpan.textContent = `[${msg.timestamp}] ${senderClass.toUpperCase()}`;
+
+             li.appendChild(contentSpan);
+             li.appendChild(metaSpan);
+
+             messagesContainer.appendChild(li);
+             displayedMessageIds.add(msg.id); // Mark as displayed
+             return true;
+        }
+
+        // Fetches ONLY BOT messages and adds them if not already displayed
+        async function fetchAndUpdateMessages() {
+            if (isFetching) return;
+            isFetching = true;
+            let addedNew = false;
+             try {
+                const response = await fetch('/get_messages'); // Fetches BOT messages from server store
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const result = await response.json();
+                const botMessages = result.messages || [];
+
+                botMessages.forEach(msg => {
+                    // addMessageToDisplay checks displayedMessageIds
+                    if(addMessageToDisplay(msg)) {
+                        addedNew = true;
+                    }
+                });
+
+            } catch (error) {
+                console.error('Error fetching messages:', error);
+            } finally {
+                 isFetching = false;
+                 if (addedNew) {
+                     messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                 }
+             }
+        }
+
+       async function sendMessage() {
+            const messageText = messageInput.value.trim();
+            if (!messageText || isSending) return;
+            isSending = true;
+            sendButton.disabled = true;
+            messageInput.disabled = true;
+
+            // 1. Create and display user message OBJECT immediately
+             const userTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+             const localUserId = `user-${Date.now()}`;
+             const userMsg = {
+                 sender: 'user',
+                 timestamp: userTimestamp,
+                 content: messageText,
+                 id: localUserId
+             };
+             if(addMessageToDisplay(userMsg)){ // Add user message to display
+                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
+             }
+             messageInput.value = '';
+
+            // 2. Send message to viewer backend to forward to main backend
+            try {
+                const response = await fetch('/send_message', { // Send to viewer backend
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: messageText })
+                });
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ message: response.statusText }));
+                    console.error('Error sending message via viewer:', errorData.message);
+                    // Add error message to display
+                    addMessageToDisplay({ sender: 'system', timestamp: new Date().toLocaleTimeString(), content: `Error sending: ${errorData.message}`, id:`err-${Date.now()}`});
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                }
+                 // Bot response will arrive via the fetchAndUpdateMessages polling
+            } catch (error) {
+                console.error('Network error sending message via viewer:', error);
+                 addMessageToDisplay({ sender: 'system', timestamp: new Date().toLocaleTimeString(), content: `Network Error: ${error}`, id:`neterr-${Date.now()}`});
+                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            } finally {
+                 isSending = false;
+                 sendButton.disabled = false;
+                 messageInput.disabled = false;
+                 messageInput.focus();
+            }
+        }
+
+       async function clearMessages() {
+             displayedMessageIds.clear(); // Clear JS tracking
+             messagesContainer.innerHTML = '<li>Clearing...</li>'; // Update display
+            try {
+                await fetch('/clear_messages', { method: 'POST' }); // Tell server to clear its bot store
+                 messagesContainer.innerHTML = '<li>Messages cleared.</li>';
+            } catch (error) {
+                console.error('Error signaling viewer to clear messages:', error);
+                messagesContainer.innerHTML = '<li>Error clearing messages.</li>';
+            }
+        }
+
+        // Event Listeners
+        sendButton.addEventListener('click', sendMessage);
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') { sendMessage(); }
+        });
+        clearButton.addEventListener('click', clearMessages);
+
+        // Fetch messages periodically
+        setInterval(fetchAndUpdateMessages, 1500);
+
+        // Initial fetch
+        // No initial fetch needed, or fetch then clear display?
+        // Let's start clean
+        messagesContainer.innerHTML = '<li>Connecting...</li>'; // Initial message
+
+    </script>
+
+</body>
+</html>
+
+# --- END OF FILE tests/templates/browser_chat.html ---
+
+
+
+
+================================================================================
+📦 Node.js Dependencies Note
+================================================================================
+
+# The 'package.json' file lists Node.js dependencies.
+# Run 'npm install' in the project root to install these dependencies.
+# The 'node_modules/' directory is NOT included in this dump.
+

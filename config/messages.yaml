@@ -1,0 +1,44 @@
+# config/messages.yaml
+
+# --- Message 1: The Initial Welcome (for 'new' users) ---
+initial_welcome_message:
+  en: |
+    Hello! 👋 I'm Kairo, your personal productivity coach.
+
+    I can help you build focus and momentum with simple daily rituals, right here in WhatsApp.
+
+    Ready to get set up in under a minute? (yes/no)
+  he: |
+    שלום! 👋 אני קאירו, מאמן הפרודוקטיביות האישי שלך.
+
+    אני יכול לעזור לך לנהל את המשימות שלך, ולבנות לך הרגלים שיעזרו לפרודוקטיביות שלך, כאן בוואטסאפ.
+
+    שנתחיל?
+
+# --- Message 2: Onboarding Completion (for 'active' users) ---
+onboarding_completion_message:
+  en: |
+    Great, you're all set! ✅
+
+    Here’s the best way to start:
+    1.  **Capture Everything:** Anytime a task comes to mind, just send it to me. e.g., "remind me to call the bank at 4pm" or "add task to prepare meeting notes".
+    2.  **Trust the Rituals:** I'll check in with you every morning and evening to help you plan and reflect.
+
+    What's the very first thing on your mind?
+  he: |
+    מעולה, הכל מוכן! ✅
+
+    הנה הדרך הכי טובה להתחיל:
+    1.  **תפוס/י הכל:** בכל פעם שמשימה עולה לך לראש, פשוט שלח/י לי אותה. למשל: "תזכר לי להתקשר לבנק ב-16:00" או "הוסף משימה להכין סיכום פגישה".
+    2.  **סמוך/י על התהליך:** אני אצור איתך קשר כל בוקר וערב כדי לעזור לך לתכנן ולסכם את היום.
+
+    רוצה להוסיף את המשימה הראשונה שיש לך?
+
+# --- Other System Messages ---
+generic_error_message:
+  en: "Sorry, something went wrong on my end. Please try again."
+  he: "מצטער, משהו השתבש בצד שלי. אנא נסה/י שוב."
+
+intent_clarify_message:
+  en: "Sorry, I didn't quite understand that. Could you please rephrase?"
+  he: "מצטער, לא כל כך הבנתי. אפשר לנסח מחדש?"
