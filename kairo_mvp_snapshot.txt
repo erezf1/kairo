@@ -1,5 +1,5 @@
 # Kairo Project Code Dump (v1.0 MVP)
-# Generated: 2025-07-08 18:06:02
+# Generated: 2025-07-14 12:13:15
 
 
 ================================================================================
@@ -8,10 +8,10 @@
 
 # --- START OF FILE requirements.txt ---
 
-# --- START OF FILE requirements.txt ---
 # Web Framework & Server
 fastapi>=0.110.0,<0.112.0
 uvicorn[standard]>=0.29.0,<0.30.0
+python-multipart==0.0.9 # Added for Twilio form data
 
 # Langchain Core & OpenAI Integration
 langchain>=0.1.16,<0.2.0
@@ -39,36 +39,11 @@ pydantic>=2.7.0,<3.0.0
 # --- ADDED FOR SCHEDULING ---
 APScheduler>=3.10.0,<4.0.0
 # --------------------------
-instructor>=0.5.2,<1.0.0  # Or similar version specifier
-openai>=1.0.0,<2.0.0     # Instructor depends on OpenAI v1+
-# Optional: If using pandas checks (e.g., pd.isna) - uncomment if needed
-# pandas>=2.0.0,<3.0.0
+instructor>=0.5.2,<1.0.0
+openai>=1.0.0,<2.0.0
 twilio>=7.0.0,<8.0.0 # For Twilio API integration
-Flask>=2.0.0,<4.0.0
-# --- END OF FILE requirements.txt ---
 
 # --- END OF FILE requirements.txt ---
-
-
-
-
-================================================================================
-📄 package.json
-================================================================================
-
-# --- START OF FILE package.json ---
-
-{
-  "dependencies": {
-    "axios": "^1.8.4",
-    "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.27.0"
-  }
-}
-
-
-# --- END OF FILE package.json ---
-
 
 
 
@@ -189,7 +164,6 @@ env.example
 
 
 
-
 ================================================================================
 📄 main.py
 ================================================================================
@@ -197,180 +171,110 @@ env.example
 # --- START OF FILE main.py ---
 
 # main.py
-#
-# This is the main entry point for the Kairo application backend.
-# It is responsible for:
-# 1. Parsing command-line arguments to determine which bridge to use (e.g., cli, twilio).
-# 2. Initializing all necessary services and user states from the data store.
-# 3. Starting the background scheduler for daily rituals and reminders.
-# 4. Starting the FastAPI web server (Uvicorn) to listen for incoming messages from the bridge.
-# 5. Handling graceful shutdown of all services.
-
 import os
 import sys
 import asyncio
 import signal
 import argparse
 from dotenv import load_dotenv
-import threading
+import traceback
 
-# Load .env variables before any other project imports
+# Load .env first
 load_dotenv()
 
-# --- 1. Bridge Selection (Kept as per your request) ---
-# This logic allows you to select the active bridge via --bridge CLI arg or BRIDGE_TYPE env var.
-DEFAULT_BRIDGE = "twilio" # More stable default for production
+# --- START OF CHANGE: Set BRIDGE_TYPE as an environment variable ---
+# This makes the bridge choice globally accessible to any module in any process.
+DEFAULT_BRIDGE = "cli"
 ALLOWED_BRIDGES = ["cli", "whatsapp", "twilio"]
-bridge_type_env = os.getenv("BRIDGE_TYPE", "").lower()
-
 parser = argparse.ArgumentParser(description="Run the Kairo Productivity Coach Backend")
 parser.add_argument("--bridge", type=str, choices=ALLOWED_BRIDGES, help=f"Specify the bridge interface ({', '.join(ALLOWED_BRIDGES)})")
 args = parser.parse_args()
-bridge_type_arg = args.bridge.lower() if args.bridge else None
 
-# Priority for selecting bridge: CLI argument > Environment variable > Default
-bridge_type = DEFAULT_BRIDGE
-if bridge_type_env in ALLOWED_BRIDGES:
-    bridge_type = bridge_type_env
-if bridge_type_arg:
-    bridge_type = bridge_type_arg
+cli_arg = args.bridge.lower() if args.bridge else None
+env_var = os.getenv("BRIDGE_TYPE", "").lower()
+# Priority for setting bridge type: CLI argument > Environment variable > Default
+bridge_type = cli_arg or env_var or DEFAULT_BRIDGE
+os.environ["BRIDGE_TYPE"] = bridge_type
+# --- END OF CHANGE ---
 
-# --- 2. Initial Logger and Core Imports ---
-try:
-    from tools.logger import log_info, log_error, log_warning
-except ImportError as e:
-    print(f"FATAL ERROR: Failed to import logger: {e}")
-    sys.exit(1)
+# Import other modules after setting the environment
+from tools.activity_db import init_db
+init_db()  # Initialize DB before any other service
+from tools.logger import log_info, log_error, log_warning
 
-# Core service and user management imports
+import uvicorn
 from users.user_manager import init_all_agents
 from services.scheduler_service import start_scheduler, shutdown_scheduler
-from bridge.request_router import set_bridge
-import uvicorn
-import traceback
 
-# --- 3. Dynamic Bridge Initialization ---
-# This block dynamically imports and sets up the chosen communication bridge.
-uvicorn_app_path: str | None = None
-bridge_module_name: str | None = None
-bridge_instance: any = None
+# Determine which FastAPI app to run based on the configured bridge
+UVICORN_APP_MAP = {
+    "cli": "bridge.cli_interface:app",
+    "whatsapp": "bridge.whatsapp_interface:app",
+    "twilio": "bridge.twilio_interface:app"
+}
+uvicorn_app_path = UVICORN_APP_MAP.get(bridge_type)
 
-try:
-    log_info("main", "init", f"Kairo v1.0 starting...")
-    log_info("main", "init", f"Attempting to initialize bridge: '{bridge_type}'")
-
-    if bridge_type == "cli":
-        from bridge.cli_interface import app as fastapi_app, CLIBridge, outgoing_cli_messages, cli_queue_lock
-        uvicorn_app_path = "bridge.cli_interface:app"
-        bridge_module_name = "CLI Bridge"
-        bridge_instance = CLIBridge(outgoing_cli_messages, cli_queue_lock)
-    elif bridge_type == "whatsapp":
-        from bridge.whatsapp_interface import app as fastapi_app, WhatsAppBridge, outgoing_whatsapp_messages, whatsapp_queue_lock
-        uvicorn_app_path = "bridge.whatsapp_interface:app"
-        bridge_module_name = "WhatsApp (whatsapp-web.js) Bridge"
-        bridge_instance = WhatsAppBridge(outgoing_whatsapp_messages, whatsapp_queue_lock)
-    elif bridge_type == "twilio":
-        from bridge.twilio_interface import app as fastapi_app, TwilioBridge
-        from twilio.rest import Client as TwilioSdkClient
-        
-        TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-        TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-        TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
-        
-        if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER]):
-            log_error("main", "init", "Twilio credentials not fully configured. Bridge will fail.")
-            # This is a fatal error if this bridge is selected
-            raise ValueError("Twilio bridge selected, but required environment variables are missing.")
-
-        _twilio_client = TwilioSdkClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        bridge_instance = TwilioBridge(
-            message_queue=[], lock=threading.Lock(), # Dummy queue/lock as Twilio sends directly
-            client=_twilio_client, twilio_sender_number=TWILIO_WHATSAPP_NUMBER
-        )
-        uvicorn_app_path = "bridge.twilio_interface:app"
-        bridge_module_name = "WhatsApp (Twilio) Bridge"
-    
-    # Set the initialized bridge in the request router
-    set_bridge(bridge_instance)
-    log_info("main", "init", f"Successfully initialized Bridge Interface: {bridge_module_name}")
-
-except (ImportError, ValueError) as e:
-    log_error("main", "init", f"Failed to import or configure bridge module for type '{bridge_type}': {e}", e)
+if not uvicorn_app_path:
+    log_error("main", "init", f"Invalid bridge type '{bridge_type}' configured. Exiting.")
     sys.exit(1)
 
-# --- 4. Graceful Shutdown Handler ---
-server: uvicorn.Server | None = None
+log_info("main", "init", f"Kairo v1.0 starting with bridge: '{bridge_type}'")
 
+# Graceful shutdown handler remains the same
+server: uvicorn.Server | None = None
 async def handle_shutdown_signal(sig: signal.Signals, loop: asyncio.AbstractEventLoop):
-    """Handles OS signals to gracefully shut down the server and scheduler."""
     log_warning("main", "shutdown", f"Received signal {sig.name}. Initiating shutdown...")
     if server:
         server.should_exit = True
-    # Give the server a moment to start shutting down before stopping the scheduler
     await asyncio.sleep(1)
     shutdown_scheduler()
 
-# --- 5. Main Asynchronous Application Logic ---
 async def main_async():
-    """Initializes services and starts the Uvicorn server."""
     global server
-    
-    log_info("main", "startup", "Initializing agent states for all registered users...")
+    log_info("main", "startup", "Initializing agent states...")
     init_all_agents()
     log_info("main", "startup", "Agent state initialization complete.")
 
-    log_info("main", "startup", "Starting scheduler service for daily rituals...")
+    log_info("main", "startup", "Starting scheduler service...")
     if not start_scheduler():
-        log_error("main", "startup", "Scheduler service FAILED to start. Automated routines will not run.")
+        log_error("main", "startup", "Scheduler service FAILED to start.")
     else:
         log_info("main", "startup", "Scheduler service started successfully.")
 
-    # Server configuration
     reload_enabled = os.getenv("APP_ENV", "production").lower() == "development"
     log_level = "debug" if reload_enabled else "info"
-    server_port = int(os.getenv("PORT", "8000"))
-    
-    log_info("main", "startup", "Configuring FastAPI server...")
-    log_info("main", "startup", f"-> Target App: '{uvicorn_app_path}'")
-    log_info("main", "startup", f"-> Host: 0.0.0.0, Port: {server_port}")
-    log_info("main", "startup", f"-> Reload: {reload_enabled}")
+    server_port = int(os.getenv("PORT", "8001")) # Changed default port to 8001
 
+    log_info("main", "startup", "Configuring FastAPI server...")
     config = uvicorn.Config(
         uvicorn_app_path, host="0.0.0.0", port=server_port,
         reload=reload_enabled, access_log=False, log_level=log_level, lifespan="on"
     )
     server = uvicorn.Server(config)
 
-    # Add signal handlers for graceful shutdown
     loop = asyncio.get_running_loop()
     for sig_name in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig_name, lambda s=sig_name: asyncio.create_task(handle_shutdown_signal(s, loop)))
-        except NotImplementedError: # For Windows compatibility
-            signal.signal(sig_name, lambda s, f: asyncio.create_task(handle_shutdown_signal(signal.Signals(s), loop)))
+        except NotImplementedError:
+             signal.signal(sig_name, lambda s, f: asyncio.create_task(handle_shutdown_signal(signal.Signals(s), loop)))
 
-    # Run the server
     await server.serve()
-    
-    # This part runs after the server has stopped
-    log_info("main", "shutdown", "Server has stopped. Main async process finished.")
+    log_info("main", "shutdown", "Server has stopped.")
 
-
-# --- 6. Script Entry Point ---
 if __name__ == "__main__":
     try:
         asyncio.run(main_async())
-    except (KeyboardInterrupt, SystemExit) as e:
-        log_warning("main", "exit", f"Application exit requested ({type(e).__name__}).")
+    except (KeyboardInterrupt, SystemExit):
+        log_warning("main", "exit", "Application exit requested.")
     except Exception as e:
-        log_error("main", "critical", f"Unhandled error during server execution.", e)
-        log_error("main", "critical", f"Traceback:\n{traceback.format_exc()}")
+        log_error("main", "critical", "Unhandled error during server execution.", e)
+        traceback.print_exc()
         sys.exit(1)
     finally:
         log_info("main", "exit", "Application has shut down.")
 
 # --- END OF FILE main.py ---
-
 
 
 
@@ -384,78 +288,99 @@ if __name__ == "__main__":
 import json
 from typing import Dict, List, Any
 
-# Core application imports
 from services.llm_interface import get_instructor_client
 from .tool_definitions import AVAILABLE_TOOLS, TOOL_PARAM_MODELS
-from tools.logger import log_info, log_error, log_warning
-from services.shared_resources import get_prompt, get_message_templates
-from users.user_manager import add_message_to_user_history
+from tools.logger import log_info, log_error
+from services.shared_resources import get_message_templates
+import tools.activity_db as db
 
-
-# --- Setup ---
 ERROR_TEMPLATES = get_message_templates("generic_error_message") or {}
 GENERIC_ERROR_MSG = ERROR_TEMPLATES.get("en", "Sorry, an error occurred.")
 
-# --- Main Agent Handler ---
-def handle_user_request(user_id: str, message: str, full_context: Dict) -> str:
-    """Handles all incoming requests (user messages & system triggers) for Kairo."""
-    fn_name = "handle_user_request"
-    client = get_instructor_client()
-    if not client: return GENERIC_ERROR_MSG
-
-    # 1. Prepare context and prompt
-    try:
-        system_prompt = get_prompt("kairo_agent_system_prompt")
-        if not system_prompt:
-            log_error("kairo_agent", fn_name, "Critical: kairo_agent_system_prompt not found.")
-            return GENERIC_ERROR_MSG
-            
-        # --- THIS IS THE FIX ---
-        # Only fetch ACTIVE items to send to the LLM.
-        # This keeps the context small, fast, and relevant.
-        active_items = full_context.get("items", [])
-        # --- END OF FIX ---
-        
-        context_for_llm = {
-            "preferences": full_context.get("preferences", {}),
-            "items": active_items # Pass only the active items
-        }
-        context_json_str = json.dumps(context_for_llm, separators=(',', ':'), default=str)
-
-        history = full_context.get("conversation_history", [])
-        llm_history = _reconstruct_llm_history(history[-20:]) # Keep history reconstruction lean
-        system_message = f"{system_prompt}\n\n--- CURRENT USER CONTEXT ---\n{context_json_str}"
-        
-        messages_for_api = [{"role": "system", "content": system_message}, *llm_history]
-        if message:
-            messages_for_api.append({"role": "user", "content": message})
-            
-    except Exception as e:
-        log_error("kairo_agent", fn_name, f"Error preparing context for {user_id}", e)
-        return GENERIC_ERROR_MSG
-
 def _reconstruct_llm_history(history: List[Dict]) -> List[Dict]:
     """
-    Helper to format the conversation history for the LLM API.
-    It now only includes 'user' and 'assistant' text messages, as tool
-    and system messages are handled within the single turn logic.
+    Formats the conversation history from our DB into the format OpenAI API expects.
+    It only includes 'user' and 'assistant' text messages.
     """
     api_history = []
     for entry in history:
         role = entry.get("role")
-        
-        if role == "user":
-            api_history.append({"role": "user", "content": entry.get("content")})
-        elif role == "assistant":
-            # For the LLM's long-term memory, we only care about what was actually said to the user,
-            # not the intermediate tool call requests.
-            if entry.get("content"):
-                 api_history.append({"role": "assistant", "content": entry.get("content")})
-            
+        content = entry.get("content")
+        # Ensure we only pass valid roles and non-empty content to the API
+        if role in ["user", "assistant"] and content:
+            api_history.append({"role": role, "content": content})
     return api_history
 
-# --- END OF FILE agents/kairo_agent.py ---
+def handle_user_request(user_id: str, message: str, full_context: Dict, system_prompt: str) -> str:
+    """Handles all incoming requests using the provided system_prompt."""
+    fn_name = "handle_user_request"
+    client = get_instructor_client()
+    if not client: return GENERIC_ERROR_MSG
 
+    try:
+        context_for_llm = {
+            "preferences": full_context.get("preferences", {}),
+            "items": full_context.get("items", [])
+        }
+        context_json_str = json.dumps(context_for_llm, separators=(',', ':'), default=str)
+        system_message = f"{system_prompt}\n\n--- CURRENT USER CONTEXT ---\n{context_json_str}"
+        
+        # Format the short-term conversation history for the LLM
+        llm_history = _reconstruct_llm_history(full_context.get("conversation_history", []))
+        
+        messages_for_api = [{"role": "system", "content": system_message}]
+        messages_for_api.extend(llm_history) # Add the formatted history
+        
+        if message:
+            messages_for_api.append({"role": "user", "content": message})
+            
+    except Exception as e:
+        log_error("kairo_agent", "prepare_context", f"Error for {user_id}", e)
+        return GENERIC_ERROR_MSG
+
+    try:
+        log_info("kairo_agent", fn_name, f"Calling LLM for user {user_id}...")
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=messages_for_api,
+            tools=[{"type": "function", "function": {"name": name, "description": model.__doc__, "parameters": model.model_json_schema()}} for name, model in TOOL_PARAM_MODELS.items()],
+            tool_choice="auto",
+            max_retries=1,
+            temperature=0.2,
+        )
+
+        message_from_llm = response.choices[0].message
+
+        if message_from_llm.tool_calls:
+            messages_for_api.append(message_from_llm)
+            for tool_call in message_from_llm.tool_calls:
+                tool_name = tool_call.function.name
+                tool_function = AVAILABLE_TOOLS.get(tool_name)
+                if not tool_function: continue
+
+                try:
+                    param_model = TOOL_PARAM_MODELS[tool_name]
+                    tool_args = param_model.model_validate_json(tool_call.function.arguments)
+                    tool_result = tool_function(user_id=user_id, params=tool_args)
+                    db.log_llm_activity(user_id, tool_name, tool_args.model_dump(), tool_result)
+                    messages_for_api.append({"tool_call_id": tool_call.id, "role": "tool", "name": tool_name, "content": json.dumps(tool_result, default=str)})
+                except Exception as e:
+                    log_error("kairo_agent", fn_name, f"Error executing tool '{tool_name}'", e)
+                    messages_for_api.append({"tool_call_id": tool_call.id, "role": "tool", "name": tool_name, "content": json.dumps({"error": str(e)})})
+            
+            final_response = client.chat.completions.create(model="gpt-4-turbo", messages=messages_for_api, temperature=0.2)
+            final_response_message = final_response.choices[0].message.content
+        else:
+            final_response_message = message_from_llm.content
+
+        log_info("kairo_agent", fn_name, f"Generated final response for user {user_id}.")
+        return final_response_message
+
+    except Exception as e:
+        log_error("kairo_agent", fn_name, f"LLM or tool processing error for {user_id}", e)
+        return GENERIC_ERROR_MSG
+
+# --- END OF FILE agents/kairo_agent.py ---
 
 
 
@@ -467,28 +392,32 @@ def _reconstruct_llm_history(history: List[Dict]) -> List[Dict]:
 
 # agents/tool_definitions.py
 from pydantic import BaseModel, Field
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 # The tools now interact with our high-level service managers
 import services.task_manager as kairo_core
 import users.user_manager as user_manager
-from services.shared_resources import get_message_templates
 
 # ===================================================================
 # == 1. Pydantic Models for Tool Parameters
-# == Defines the expected inputs for each tool the agent can use.
 # ===================================================================
 
 class CreateTaskParams(BaseModel):
     """A tool to create a new task item in the user's logbook."""
     description: str = Field(..., description="The full description of the task.")
-    project: str = Field("", description="Optional: A project tag, e.g., '#work'.")
-    due_date: str = Field("", description="Optional: A due date in 'YYYY-MM-DD' format.")
+    project: Optional[str] = Field(None, description="Optional: A project tag, e.g., '#work'.")
+    due_date: Optional[str] = Field(None, description="Optional: A due date in 'YYYY-MM-DD' format.")
+    size: Optional[str] = Field(None, description="The estimated size of the task, e.g., 'small', 'medium', 'large'.")
+    worktime: Optional[int] = Field(None, description="The estimated work time in minutes required for the task.")
+    priority: Optional[int] = Field(None, description="The priority of the task, e.g., 1 (highest) to 5 (lowest).")
+    urgency: Optional[int] = Field(None, description="The urgency of the task, e.g., 1 (highest) to 5 (lowest).")
+    main_task_id: Optional[str] = Field(None, description="If this is a sub-task, the item_id of the main parent task.")
 
 class CreateReminderParams(BaseModel):
     """A tool to create a new reminder item for a specific time."""
     description: str = Field(..., description="The full description of the reminder.")
     remind_at: str = Field(..., description="The specific time for the reminder in ISO 8601 UTC format.")
+    duration: Optional[int] = Field(None, description="The duration of the event in minutes, for creating a calendar event.")
 
 class UpdateItemParams(BaseModel):
     """A tool to update one or more properties of an existing task or reminder."""
@@ -500,7 +429,7 @@ class UpdateUserPreferencesParams(BaseModel):
     name: Optional[str] = Field(None, description="The user's preferred name.")
     timezone: Optional[str] = Field(None, description="The user's timezone, e.g., 'America/New_York'.")
     language: Optional[str] = Field(None, description="The user's language, 'en' or 'he'.")
-    work_days: Optional[list[str]] = Field(None, description="A list of the user's working days, e.g., ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']")
+    work_days: Optional[List[str]] = Field(None, description="A list of the user's working days, e.g., ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']")
 
 class FinalizeOnboardingParams(BaseModel):
     """
@@ -511,49 +440,45 @@ class FinalizeOnboardingParams(BaseModel):
 
 # ===================================================================
 # == 2. Tool Function Definitions
-# == The actual Python functions that get executed by the agent.
-# == Note: They return data for the agent, NOT user-facing messages.
 # ===================================================================
 
 def create_task(user_id: str, params: CreateTaskParams) -> Dict:
     """Creates a new task item and returns its data."""
-    created_item = kairo_core.create_item(user_id, "task", params.model_dump())
-    if created_item:
+    # Pass all optional params by excluding None values
+    created_item = kairo_core.create_item(user_id, "task", params.model_dump(exclude_none=True))
+    if created_item.get("success"):
         return {"success": True, "item_id": created_item.get("item_id")}
     return {"success": False, "error": "Failed to create task."}
 
 def create_reminder(user_id: str, params: CreateReminderParams) -> Dict:
     """Creates a new reminder item and returns its data."""
-    created_item = kairo_core.create_item(user_id, "reminder", params.model_dump())
-    if created_item:
+    created_item = kairo_core.create_item(user_id, "reminder", params.model_dump(exclude_none=True))
+    if created_item.get("success"):
         return {"success": True, "item_id": created_item.get("item_id")}
     return {"success": False, "error": "Failed to create reminder."}
 
 def update_item(user_id: str, params: UpdateItemParams) -> Dict:
     """Updates properties of an existing item and reports success."""
     updated_item = kairo_core.update_item(user_id, params.item_id, params.updates)
-    if updated_item:
+    if updated_item.get("success"):
         return {"success": True, "item_id": updated_item.get("item_id")}
     return {"success": False, "error": "Failed to update item."}
 
 def update_user_preferences(user_id: str, params: UpdateUserPreferencesParams) -> Dict:
     """Updates the user's preferences and reports success."""
-    updates_to_apply = params.model_dump(exclude_unset=True)
+    updates_to_apply = params.model_dump(exclude_unset=True, exclude_none=True)
     if not updates_to_apply:
         return {"success": False, "error": "No preferences were provided to update."}
-    
     success = user_manager.update_user_preferences(user_id, updates_to_apply)
     return {"success": success}
 
 def finalize_onboarding(user_id: str, params: FinalizeOnboardingParams) -> Dict:
     """Sets the user's status to 'active' and reports success."""
     success = user_manager.update_user_preferences(user_id, {"status": "active"})
-    # The agent will formulate the final welcome message based on this success result.
     return {"success": success}
 
 # ===================================================================
 # == 3. Tool Dictionaries for the Agent
-# == These dictionaries map the tool names to their functions and models.
 # ===================================================================
 
 AVAILABLE_TOOLS = {
@@ -576,7 +501,6 @@ TOOL_PARAM_MODELS = {
 
 
 
-
 ================================================================================
 📄 bridge/request_router.py
 ================================================================================
@@ -586,103 +510,140 @@ TOOL_PARAM_MODELS = {
 # bridge/request_router.py
 import re
 import os
-import yaml
 import json
+import threading
 from typing import Dict, Any
+from datetime import datetime, timezone
 
 from tools.logger import log_info, log_error
 import users.user_manager as user_manager
 from agents.kairo_agent import handle_user_request
 from services.cheats import handle_cheat_command
-from services.shared_resources import get_message_templates
+from services.shared_resources import get_message_templates, get_prompt, get_welcome_message_key
 
 ERROR_TEMPLATES = get_message_templates("generic_error_message") or {}
 GENERIC_ERROR_MSG_ROUTER = ERROR_TEMPLATES.get("en", "Sorry, an error occurred.")
-current_bridge_router: Any = None
 
-def set_bridge(bridge_instance: Any):
-    global current_bridge_router
-    if current_bridge_router is None:
-        current_bridge_router = bridge_instance
-        log_info("request_router", "set_bridge", f"Bridge set to: {type(bridge_instance).__name__}")
+_bridge_instance: Any = None
+_bridge_lock = threading.Lock()
+
+def get_bridge() -> Any:
+    """Lazily initializes and returns the singleton bridge instance."""
+    global _bridge_instance
+    if _bridge_instance is None:
+        with _bridge_lock:
+            if _bridge_instance is None:
+                bridge_type = os.getenv("BRIDGE_TYPE", "cli")
+                log_info("request_router", "get_bridge", f"First call. Initializing bridge of type '{bridge_type}'...")
+                try:
+                    if bridge_type == "cli":
+                        from bridge.cli_interface import CLIBridge, outgoing_cli_messages, cli_queue_lock
+                        _bridge_instance = CLIBridge(outgoing_cli_messages, cli_queue_lock)
+                    elif bridge_type == "whatsapp":
+                        from bridge.whatsapp_interface import WhatsAppBridge, outgoing_whatsapp_messages, whatsapp_queue_lock
+                        _bridge_instance = WhatsAppBridge(outgoing_whatsapp_messages, whatsapp_queue_lock)
+                    elif bridge_type == "twilio":
+                        from bridge.twilio_interface import TwilioBridge
+                        from twilio.rest import Client as TwilioSdkClient
+                        sid, token, number = os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"), os.getenv("TWILIO_WHATSAPP_NUMBER")
+                        if not all([sid, token, number]): raise ValueError("Twilio credentials missing.")
+                        _bridge_instance = TwilioBridge(TwilioSdkClient(sid, token), number)
+                    else:
+                        raise ValueError(f"Unsupported bridge type: {bridge_type}")
+                    log_info("request_router", "get_bridge", f"Bridge '{type(_bridge_instance).__name__}' initialized.")
+                except (ImportError, ValueError) as e:
+                    log_error("request_router", "get_bridge", f"Failed to initialize bridge '{bridge_type}'", e)
+    return _bridge_instance
 
 def send_message(user_id: str, message_body: str):
+    """Sends a message to a user via the configured bridge."""
     if not user_id or not message_body: return
     user_manager.add_message_to_user_history(user_id, "assistant", "agent_text_response", content=message_body)
-    if current_bridge_router:
-        current_bridge_router.send_message(user_id, message_body)
+    bridge = get_bridge()
+    if bridge:
+        bridge.send_message(user_id, message_body)
     else:
-        log_error("request_router", "send_message", "No bridge configured.")
+        log_error("request_router", "send_message", "Bridge not available.")
 
 def normalize_user_id(user_id_from_bridge: str) -> str:
+    """Removes non-digit characters from a user ID."""
     if not user_id_from_bridge: return ""
     return re.sub(r'\D', '', str(user_id_from_bridge))
 
 def handle_incoming_message(user_id_from_bridge: str, message_text: str):
+    """Main entry point for routing all incoming user messages."""
     norm_user_id = normalize_user_id(user_id_from_bridge)
     if not norm_user_id: return
+
+    user_manager.add_message_to_user_history(norm_user_id, "user", "user_text", content=message_text)
 
     if message_text.strip().startswith('/'):
         parts = message_text.strip().split(); command = parts[0].lower(); args = parts[1:]
         cheat_result = handle_cheat_command(norm_user_id, command, args)
-        action_type = cheat_result.get("type")
-        
-        if action_type == "message":
+        if cheat_result.get("type") == "message":
             send_message(norm_user_id, cheat_result.get("content", "OK."))
-        elif action_type == "system_event":
-            event_data = {"user_id": norm_user_id, "trigger_type": cheat_result.get("trigger_type")}
-            handle_internal_system_event(event_data)
+        elif cheat_result.get("type") == "system_event":
+            handle_internal_system_event({"user_id": norm_user_id, "trigger_type": cheat_result.get("trigger_type")})
         return
 
-    user_manager.add_message_to_user_history(norm_user_id, "user", "user_text", content=message_text)
     agent_state = user_manager.get_agent(norm_user_id)
-    if not agent_state:
-        log_error("request_router", "handle_incoming", f"CRITICAL: Failed to get agent state for {norm_user_id}.")
-        send_message(norm_user_id, GENERIC_ERROR_MSG_ROUTER)
-        return
-
+    agent_state['preferences']['current_utc_date'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     user_prefs = agent_state.get("preferences", {})
     user_status = user_prefs.get("status")
     
     if user_status == "new":
+        welcome_message_key = get_welcome_message_key()
+        welcome_templates = get_message_templates(welcome_message_key) or {}
         user_lang = user_prefs.get("language", "en")
-        welcome_templates = get_message_templates("initial_welcome_message") or {}
         send_message(norm_user_id, welcome_templates.get(user_lang, "Hello!"))
-        user_manager.update_user_preferences(norm_user_id, {"status": "pending_onboarding"})
+        user_manager.update_user_preferences(norm_user_id, {"status": "onboarding"})
         return
 
-    elif user_status == "pending_onboarding":
-        affirmative_responses = {"yes", "y", "ok", "sure", "yep", "כן", "כן.", "שנתחיל", "בטח"}
-        if message_text.lower().strip() in affirmative_responses:
-            user_manager.update_user_preferences(norm_user_id, {"status": "onboarding"})
-            agent_state = user_manager.get_agent(norm_user_id) # Refresh state
-        else:
-            return
+    prompt_key = 'kairo_onboarding_system_prompt' if user_status == 'onboarding' else 'kairo_agent_system_prompt'
+    system_prompt = get_prompt(prompt_key)
+
+    if not system_prompt:
+        log_error("request_router", "handle_incoming", f"Could not load system prompt for status '{user_status}'.")
+        send_message(norm_user_id, GENERIC_ERROR_MSG_ROUTER)
+        return
 
     try:
-        response = handle_kairo_request(user_id=norm_user_id, message=message_text, full_context=agent_state)
-        if response: send_message(norm_user_id, response)
+        response = handle_user_request(
+            user_id=norm_user_id, message=message_text, full_context=agent_state, system_prompt=system_prompt
+        )
+        if response:
+            send_message(norm_user_id, response)
     except Exception as e:
         log_error("request_router", "handle_incoming", f"Error from KairoAgent for {norm_user_id}", e)
         send_message(norm_user_id, GENERIC_ERROR_MSG_ROUTER)
 
 def handle_internal_system_event(event_data: Dict):
+    """Handles internally generated events like scheduled rituals."""
     user_id = event_data.get("user_id")
     trigger_type = event_data.get("trigger_type")
     if not user_id or not trigger_type: return
 
-    trigger_as_message = json.dumps({"trigger": trigger_type})
     agent_state = user_manager.get_agent(user_id)
     if not agent_state or agent_state.get("preferences", {}).get("status") != "active": return
+    
+    agent_state['preferences']['current_utc_date'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+    system_prompt = get_prompt('kairo_agent_system_prompt')
+    if not system_prompt:
+        log_error("request_router", "handle_internal", "Could not load main system prompt for internal event.")
+        return
 
     try:
-        response = handle_kairo_request(user_id=user_id, message=trigger_as_message, full_context=agent_state)
-        if response: send_message(user_id, response)
+        trigger_as_message = json.dumps({"trigger": trigger_type})
+        response = handle_user_request(
+            user_id=user_id, message=trigger_as_message, full_context=agent_state, system_prompt=system_prompt
+        )
+        if response:
+            send_message(user_id, response)
     except Exception as e:
         log_error("request_router", "handle_internal", f"Error routing internal event '{trigger_type}' for {user_id}", e)
 
 # --- END OF FILE bridge/request_router.py ---
-
 
 
 
@@ -729,7 +690,6 @@ def get_instructor_client():
 
 
 
-
 ================================================================================
 📄 services/notification_service.py
 ================================================================================
@@ -738,91 +698,65 @@ def get_instructor_client():
 
 # services/notification_service.py
 from datetime import datetime, timezone, timedelta
-import pytz
-from typing import Dict
-
 from tools.logger import log_info, log_error, log_warning
-# This now gets the user list directly from our new data layer manager
 from users.user_manager import get_all_user_data
 from bridge.request_router import send_message
-from services.agent_state_manager import get_notified_event_ids, add_notified_event_id, clear_notified_event_ids
-from services.task_manager import update_item # To mark reminder as complete
+import tools.activity_db as db  # Use the database directly
+import services.task_manager as task_manager # For updating the item status
 
-# Minimal translations for notification messages
 NOTIFICATION_TRANSLATIONS = {
-    "en": {
-        "reminder_alert": "🔔 Reminder: {description}",
-    },
-    "he": {
-        "reminder_alert": "🔔 תזכורת: {description}",
-    }
+    "en": {"reminder_alert": "🔔 Reminder: {description}"},
+    "he": {"reminder_alert": "🔔 תזכורת: {description}"}
 }
 
-def _get_notification_translation(lang: str, key: str, default_lang: str = "en") -> str:
+def _get_notification_translation(lang: str, key: str) -> str:
     """Fetches a translation string for notifications."""
     return NOTIFICATION_TRANSLATIONS.get(lang, {}).get(key, "{description}")
 
 def check_and_send_reminders():
     """
-    Scheduled job that iterates through all users, checks for upcoming internal reminders,
-    and sends a notification if the time is right.
+    Scheduled job that iterates through all users, checks for due reminders
+    in the database, and sends notifications.
     """
     fn_name = "check_and_send_reminders"
     now_utc = datetime.now(timezone.utc)
-    all_users = get_all_user_data()
+    all_user_prefs = get_all_user_data()
 
-    for user_id, user_data in all_users.items():
-        prefs = user_data.get("preferences", {})
+    for user_id, prefs in all_user_prefs.items():
         if prefs.get("status") != "active":
             continue
 
-        # Get the set of IDs we've already notified today
-        notified_today_set = get_notified_event_ids(user_id)
-        
-        # Iterate through a copy of the items list to avoid modification issues
-        for item in list(user_data.get("items", [])):
-            if item.get("type") == "reminder" and item.get("status") == "new" and item.get("remind_at"):
-                item_id = item.get("item_id")
-                if not item_id or item_id in notified_today_set:
+        try:
+            # Fetch 'new' reminders for this specific user from the database
+            reminders_to_check = db.list_items_for_user(user_id, status_filter=["new"])
+            
+            for item in reminders_to_check:
+                if item.get("type") != "reminder" or not item.get("remind_at"):
                     continue
 
-                try:
-                    remind_at_utc = datetime.fromisoformat(item["remind_at"].replace('Z', '+00:00'))
+                item_id = item.get("item_id")
+                remind_at_utc = datetime.fromisoformat(item["remind_at"].replace('Z', '+00:00'))
+                
+                # Send notification if the reminder time is in the past or within the next minute
+                if remind_at_utc <= (now_utc + timedelta(minutes=1)):
+                    user_lang = prefs.get("language", "en")
+                    description = item.get("description", "(No Title)")
                     
-                    # Send notification if the reminder time is in the past or within the next minute
-                    if remind_at_utc <= (now_utc + timedelta(minutes=1)):
-                        user_lang = prefs.get("language", "en")
-                        description = item.get("description", "(No Title)")
-                        
-                        # Format the notification message
-                        template = _get_notification_translation(user_lang, "reminder_alert")
-                        message = template.format(description=description)
-                        
-                        # Send the message
-                        log_info(fn_name, "notification_service", f"Sending reminder '{item_id}' to user {user_id}")
-                        send_message(user_id, message)
-                        
-                        # Mark as notified for today to prevent duplicates
-                        add_notified_event_id(user_id, item_id)
-                        
-                        # Mark the reminder as complete in the database
-                        update_item(user_id, item_id, {"status": "completed"})
+                    template = _get_notification_translation(user_lang, "reminder_alert")
+                    message = template.format(description=description)
+                    
+                    log_info(fn_name, "notification_service", f"Sending reminder '{item_id}' to user {user_id}")
+                    send_message(user_id, message)
+                    
+                    # Mark the reminder as complete in the database
+                    task_manager.update_item(user_id, item_id, {"status": "completed"})
 
-                except (ValueError, TypeError) as e:
-                    log_warning(fn_name, "notification_service", f"Could not parse remind_at for item {item_id}: {item['remind_at']}. Error: {e}")
-                except Exception as e:
-                    log_error(fn_name, "notification_service", f"Error processing reminder {item_id} for user {user_id}", e)
-
-# The scheduler will also need to call a daily cleanup job.
-def daily_notification_cleanup():
-    """Clears the set of notified IDs for all users, run once daily."""
-    all_users = get_all_user_data()
-    for user_id in all_users.keys():
-        clear_notified_event_ids(user_id)
-    log_info("notification_service", "daily_cleanup", f"Cleared notified event IDs for {len(all_users)} users.")
+        except (ValueError, TypeError) as e:
+            log_warning(fn_name, "notification_service", f"Could not parse date for a reminder for user {user_id}. Error: {e}")
+        except Exception as e:
+            log_error(fn_name, "notification_service", f"Error processing reminders for user {user_id}", e)
 
 # --- END OF FILE services/notification_service.py ---
-
 
 
 
@@ -909,7 +843,6 @@ def shutdown_scheduler():
 
 
 
-
 ================================================================================
 📄 services/task_manager.py
 ================================================================================
@@ -921,41 +854,57 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict
 
-from users.user_manager import get_agent, save_user_data
-from tools.logger import log_info, log_error
+import tools.activity_db as db
+from tools.logger import log_info
 
 def create_item(user_id: str, item_type: str, item_params: Dict) -> Dict:
-    user_data = get_agent(user_id)
+    """Creates a new task or reminder in the database."""
     now_iso = datetime.now(timezone.utc).isoformat()
-    new_item = {
-        "item_id": str(uuid.uuid4()), "type": item_type, "status": "new",
-        "created_at": now_iso, "updated_at": now_iso, **item_params
+    # The 'description' is a required field for the DB, ensure it has a default
+    if 'description' not in item_params:
+        item_params['description'] = 'No description'
+        
+    new_item_data = {
+        "item_id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "type": item_type,
+        "status": "new",
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        **item_params
     }
-    user_data.setdefault("items", []).append(new_item)
-    save_user_data(user_id, user_data)
-    log_info("task_manager", "create_item", f"Created {item_type} '{new_item['item_id']}' for {user_id}.")
-    return {"success": True, "item_id": new_item.get("item_id")}
+    
+    success = db.add_or_update_item(new_item_data)
+    if success:
+        log_info("task_manager", "create_item", f"Created {item_type} '{new_item_data['item_id']}' for {user_id}.")
+        return {"success": True, "item_id": new_item_data["item_id"]}
+    else:
+        return {"success": False, "error": f"Failed to create {item_type}."}
 
 def update_item(user_id: str, item_id: str, updates: Dict) -> Dict:
-    user_data = get_agent(user_id)
-    items = user_data.get("items", [])
-    item_found = False
-    for i, item in enumerate(items):
-        if item.get("item_id") == item_id:
-            items[i].update(updates)
-            items[i]["updated_at"] = datetime.now(timezone.utc).isoformat()
-            item_found = True
-            break
+    """Updates an existing item in the database."""
+    existing_item = db.get_item(item_id)
+    if not existing_item or existing_item.get("user_id") != user_id:
+        return {"success": False, "error": "Item not found."}
     
-    if item_found:
-        save_user_data(user_id, user_data)
+    # --- START OF THE FINAL FIX ---
+    # Merge the original item's data with the new updates.
+    # This ensures all NOT NULL fields (like 'type', 'description') are preserved.
+    final_payload = {
+        **existing_item,
+        **updates,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    # --- END OF THE FINAL FIX ---
+    
+    success = db.add_or_update_item(final_payload)
+    if success:
+        log_info("task_manager", "update_item", f"Updated item '{item_id}' for user {user_id}.")
         return {"success": True, "item_id": item_id}
     else:
-        log_error("task_manager", "update_item", f"Item {item_id} not found for user {user_id}.")
-        return {"success": False, "error": "Item not found."}
+        return {"success": False, "error": "Failed to update item."}
 
 # --- END OF FILE services/task_manager.py ---
-
 
 
 
@@ -1054,7 +1003,6 @@ def handle_cheat_command(user_id: str, command: str, args: List[str]) -> Dict[st
 
 
 
-
 ================================================================================
 📄 services/shared_resources.py
 ================================================================================
@@ -1062,48 +1010,277 @@ def handle_cheat_command(user_id: str, command: str, args: List[str]) -> Dict[st
 # --- START OF FILE services/shared_resources.py ---
 
 # services/shared_resources.py
-# This module is a centralized place to load shared resources like prompts and messages.
-# It has no other project dependencies, which prevents circular imports.
 import yaml
 import os
 from tools.logger import log_error, log_info
 
 _PROMPTS = {}
 _MESSAGES = {}
+_PROJECT_SETTINGS = {}
 
 def load_resources():
     """Loads all YAML files into memory."""
-    global _PROMPTS, _MESSAGES
+    global _PROMPTS, _MESSAGES, _PROJECT_SETTINGS
     
     try:
         with open("config/prompts.yaml", 'r', encoding="utf-8") as f:
             _PROMPTS = yaml.safe_load(f) or {}
     except Exception as e:
         log_error("shared_resources", "load_resources", f"Failed to load prompts.yaml: {e}")
-        _PROMPTS = {}
 
     try:
         with open("config/messages.yaml", 'r', encoding="utf-8") as f:
             _MESSAGES = yaml.safe_load(f) or {}
     except Exception as e:
         log_error("shared_resources", "load_resources", f"Failed to load messages.yaml: {e}")
-        _MESSAGES = {}
+
+    try:
+        with open("config/settings.yaml", 'r', encoding="utf-8") as f:
+            _PROJECT_SETTINGS = yaml.safe_load(f) or {}
+    except Exception as e:
+        log_error("shared_resources", "load_resources", f"Failed to load settings.yaml: {e}")
         
-    log_info("shared_resources", "load_resources", "Shared prompts and messages have been loaded.")
+    log_info("shared_resources", "load_resources", "Shared prompts, messages, and settings have been loaded.")
 
 def get_prompt(key: str) -> str | None:
-    """Gets a specific prompt by its key."""
     return _PROMPTS.get(key)
 
 def get_message_templates(key: str) -> dict | None:
-    """Gets a dictionary of message templates (for different languages) by its key."""
     return _MESSAGES.get(key)
 
-# Load resources when the module is first imported.
+# --- START OF REFACTORED LOGIC ---
+
+def _get_current_project_config() -> dict:
+    """Internal helper to get the full config block for the current project."""
+    project_name = os.getenv("PROJECT_NAME", "kairo")
+    log_info("shared_resources", "get_project_config", f"Loading config for project: {project_name}.")
+    
+    project_configs = _PROJECT_SETTINGS.get("projects", {})
+    # Return the specific project config, or fall back to the default config block
+    return project_configs.get(project_name, _PROJECT_SETTINGS.get("default_config", {}))
+
+def get_default_preferences() -> dict:
+    """Gets the default_preferences dictionary for the current project."""
+    config = _get_current_project_config()
+    preferences = config.get("default_preferences", {})
+    if not preferences:
+        log_error("shared_resources", "get_defaults", "CRITICAL: Could not find 'default_preferences' in config for current project.")
+        # Return a hardcoded safe fallback
+        return {"name": None, "timezone": None, "language": "en", "status": "new"}
+    return preferences
+
+def get_welcome_message_key() -> str:
+    """Gets the welcome_message_key for the current project."""
+    config = _get_current_project_config()
+    # Fall back to the standard key if not found
+    return config.get("welcome_message_key", "initial_welcome_message")
+
+# --- END OF REFACTORED LOGIC ---
+
 load_resources()
 
 # --- END OF FILE services/shared_resources.py ---
 
+
+
+================================================================================
+📄 tools/activity_db.py
+================================================================================
+
+# --- START OF FILE tools/activity_db.py ---
+
+# tools/activity_db.py
+import sqlite3
+import os
+import json
+import threading
+from datetime import datetime, timezone
+from typing import Dict, List, Any
+
+from tools.logger import log_info, log_error
+
+# --- Configuration ---
+DATA_SUFFIX = os.getenv("DATA_SUFFIX", "")
+DB_DIR = "data"
+DB_FILE = os.path.join(DB_DIR, f"kairo_activity{DATA_SUFFIX}.db")
+DB_LOCK = threading.Lock()
+
+
+# --- Database Initialization & Migration ---
+def init_db():
+    """Initializes the database and runs a safe migration to add new columns if they don't exist."""
+    os.makedirs(DB_DIR, exist_ok=True)
+    with DB_LOCK, sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10) as conn:
+        cursor = conn.cursor()
+        
+        # 1. Create the table with the full, final schema. This works for new databases.
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users_tasks (
+            item_id TEXT PRIMARY KEY NOT NULL,
+            user_id TEXT NOT NULL,
+            type TEXT NOT NULL CHECK(type IN ('task', 'reminder')),
+            status TEXT NOT NULL CHECK(status IN ('new', 'in_progress', 'completed', 'deleted')),
+            description TEXT NOT NULL,
+            project TEXT,
+            due_date TEXT,
+            remind_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            size TEXT,
+            worktime INTEGER,
+            priority INTEGER,
+            urgency INTEGER,
+            main_task_id TEXT,
+            duration INTEGER,
+            calendar_id TEXT
+        )""")
+        
+        # 2. --- MIGRATION LOGIC ---
+        # This handles existing databases by adding columns one by one if they are missing.
+        log_info("activity_db", "migration_check", "Checking for database schema updates...")
+        cursor.execute("PRAGMA table_info(users_tasks)")
+        existing_columns = [row[1] for row in cursor.fetchall()]
+        
+        columns_to_add = {
+            "size": "TEXT",
+            "worktime": "INTEGER",
+            "priority": "INTEGER",
+            "urgency": "INTEGER",
+            "main_task_id": "TEXT",
+            "duration": "INTEGER",
+            "calendar_id": "TEXT"
+        }
+        
+        for col_name, col_type in columns_to_add.items():
+            if col_name not in existing_columns:
+                try:
+                    cursor.execute(f"ALTER TABLE users_tasks ADD COLUMN {col_name} {col_type}")
+                    log_info("activity_db", "migration_apply", f"Added missing column '{col_name}' to users_tasks table.")
+                except sqlite3.Error as e:
+                    log_error("activity_db", "migration_apply", f"Failed to add column '{col_name}': {e}")
+        # --- END OF MIGRATION LOGIC ---
+
+        # The other tables are for logging and don't need migration in this case.
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, user_id TEXT NOT NULL,
+            role TEXT NOT NULL, message_type TEXT NOT NULL, content TEXT
+        )""")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_user_id_ts ON messages (user_id, timestamp)")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS llm_activity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, user_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL, tool_args_json TEXT NOT NULL, tool_result_json TEXT NOT NULL
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS system_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, level TEXT NOT NULL,
+            module TEXT NOT NULL, function TEXT NOT NULL, message TEXT NOT NULL, traceback TEXT
+        )""")
+        
+        conn.commit()
+    log_info("activity_db", "init_db", f"Database initialized and schema verified at {DB_FILE}")
+
+def _dict_factory(cursor, row):
+    fields = [column[0] for column in cursor.description]
+    return {key: value for key, value in zip(fields, row)}
+
+# --- Core Item Functions (Tasks/Reminders) ---
+def add_or_update_item(item_data: Dict) -> bool:
+    item_id = item_data.get("item_id")
+    if not item_id: return False
+    
+    columns = list(item_data.keys())
+    placeholders = ', '.join('?' * len(columns))
+    update_setters = ', '.join([f"{col} = excluded.{col}" for col in columns if col != 'item_id'])
+    
+    sql = f"""
+        INSERT INTO users_tasks ({', '.join(columns)})
+        VALUES ({placeholders})
+        ON CONFLICT(item_id) DO UPDATE SET {update_setters}
+    """
+    params = list(item_data.values())
+    
+    try:
+        with DB_LOCK, sqlite3.connect(DB_FILE) as conn:
+            conn.execute(sql, params)
+            conn.commit()
+        return True
+    except sqlite3.Error as e:
+        log_error("activity_db", "add_or_update_item", f"DB error for item {item_id}", e)
+        return False
+
+def get_item(item_id: str) -> Dict | None:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = _dict_factory
+            return conn.execute("SELECT * FROM users_tasks WHERE item_id = ?", (item_id,)).fetchone()
+    except sqlite3.Error as e:
+        log_error("activity_db", "get_item", f"DB error getting item {item_id}", e)
+        return None
+
+def list_items_for_user(user_id: str, status_filter: List[str] | None = None) -> List[Dict]:
+    sql = "SELECT * FROM users_tasks WHERE user_id = ?"
+    params: List[Any] = [user_id]
+    if status_filter:
+        placeholders = ','.join('?' * len(status_filter))
+        sql += f" AND status IN ({placeholders})"
+        params.extend(status_filter)
+    sql += " ORDER BY created_at DESC"
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = _dict_factory
+            return conn.execute(sql, params).fetchall()
+    except sqlite3.Error as e:
+        log_error("activity_db", "list_items_for_user", f"DB error for {user_id}", e)
+        return []
+
+def list_messages_for_user(user_id: str, limit: int = 10) -> List[Dict]:
+    sql = "SELECT role, content FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?"
+    params = [user_id, limit]
+    messages = []
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = _dict_factory
+            messages = conn.execute(sql, params).fetchall()
+        return messages[::-1]
+    except sqlite3.Error as e:
+        log_error("activity_db", "list_messages_for_user", f"DB error for {user_id}", e)
+        return []
+
+# --- Logging Functions ---
+def log_message(user_id: str, role: str, message_type: str, content: str):
+    ts = datetime.now(timezone.utc).isoformat()
+    sql = "INSERT INTO messages (timestamp, user_id, role, message_type, content) VALUES (?, ?, ?, ?, ?)"
+    try:
+        with DB_LOCK, sqlite3.connect(DB_FILE) as conn:
+            conn.execute(sql, (ts, user_id, role, message_type, content))
+            conn.commit()
+    except sqlite3.Error as e:
+        log_error("activity_db", "log_message", f"DB error logging message for {user_id}", e)
+
+def log_llm_activity(user_id: str, tool_name: str, tool_args: Dict, tool_result: Dict):
+    ts = datetime.now(timezone.utc).isoformat()
+    sql = "INSERT INTO llm_activity (timestamp, user_id, tool_name, tool_args_json, tool_result_json) VALUES (?, ?, ?, ?, ?)"
+    try:
+        with DB_LOCK, sqlite3.connect(DB_FILE) as conn:
+            conn.execute(sql, (ts, user_id, tool_name, json.dumps(tool_args), json.dumps(tool_result)))
+            conn.commit()
+    except sqlite3.Error as e:
+        log_error("activity_db", "log_llm_activity", f"DB error logging LLM activity for {user_id}", e)
+
+def log_system_event(level: str, module: str, function: str, message: str, traceback_str: str | None = None, timestamp: str | None = None):
+    sql = "INSERT INTO system_logs (timestamp, level, module, function, message, traceback) VALUES (?, ?, ?, ?, ?, ?)"
+    ts = timestamp or datetime.now(timezone.utc).isoformat()
+    params = (ts, level.upper(), module, function, message, traceback_str)
+    try:
+        with DB_LOCK, sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10) as conn:
+            conn.execute(sql, params)
+            conn.commit()
+    except sqlite3.Error as e:
+        print(f"CRITICAL DB LOGGING FAILED: {ts} [{level.upper()}] {module}:{function} - {message}\n{e}")
+
+# --- END OF FILE tools/activity_db.py ---
 
 
 
@@ -1114,118 +1291,88 @@ load_resources()
 # --- START OF FILE users/user_manager.py ---
 
 # users/user_manager.py
-# FINAL VERSION: Manages user data with correct locking to prevent deadlocks.
 import json
 import os
-import re
+import threading
 from typing import Dict, Any, List
 from tools.logger import log_info, log_error
-import threading
+import tools.activity_db as db
+from services.shared_resources import get_default_preferences # Import the new, direct function
 
-# --- File and Data Configuration ---
+# --- Configuration ---
 USER_DATA_PATH = os.path.join("data", f"kairo_users{os.getenv('DATA_SUFFIX', '')}.json")
-_user_data_store: Dict[str, Dict[str, Any]] = {}
-_data_lock = threading.Lock() # Lock to protect file I/O and in-memory store access
+_user_prefs_store: Dict[str, Dict[str, Any]] = {}
+_prefs_lock = threading.Lock()
 
-DEFAULT_PREFERENCES = {
-    "name": "friend", "timezone": None, "language": "en",
-    "morning_muster_time": "08:00", "evening_reflection_time": "18:30",
-    "status": "new", "projects": ["general", "work", "personal"],
-    "work_days": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"],
-    "last_morning_trigger_date": "", "last_evening_trigger_date": "",
-}
+# --- START OF SIMPLIFIED LOGIC ---
+# Directly get the correct default preferences for the current project.
+DEFAULT_PREFERENCES = get_default_preferences()
+if not DEFAULT_PREFERENCES:
+    log_error("user_manager", "init", "CRITICAL: Could not load default preferences from settings.yaml.")
+    DEFAULT_PREFERENCES = {"name": None, "timezone": None, "language": "en", "status": "new"}
 
-# --- Core Data Functions (Private) ---
-
-def _load_user_data_from_file():
-    """(Private) Loads the user data store from file into memory. Must be called within a lock."""
-    global _user_data_store
+# --- Preference Management Functions ---
+def _load_user_preferences():
+    global _user_prefs_store
     try:
         os.makedirs(os.path.dirname(USER_DATA_PATH), exist_ok=True)
         if os.path.exists(USER_DATA_PATH):
             with open(USER_DATA_PATH, "r", encoding="utf-8") as f:
                 content = f.read()
-                _user_data_store = json.loads(content) if content.strip() else {}
-            log_info("user_manager", "load_data", f"Loaded data for {len(_user_data_store)} users.")
+                full_data = json.loads(content) if content.strip() else {}
+                for user_id, data in full_data.items():
+                    if "preferences" in data:
+                        _user_prefs_store[user_id] = data["preferences"]
         else:
-            _user_data_store = {}
+            _user_prefs_store = {}
+        log_info("user_manager", "load_prefs", f"Loaded preferences for {len(_user_prefs_store)} users.")
     except Exception as e:
-        log_error("user_manager", "load_data", f"Failed to load user data file", e)
-        _user_data_store = {}
+        log_error("user_manager", "load_prefs", "Failed to load preferences file", e)
+        _user_prefs_store = {}
 
-def _save_user_data_to_file():
-    """(Private) Saves the entire in-memory store to file. Must be called within a lock."""
+def _save_user_preferences():
+    data_to_save = {user_id: {"preferences": prefs} for user_id, prefs in _user_prefs_store.items()}
     try:
         temp_path = USER_DATA_PATH + ".tmp"
         with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(_user_data_store, f, indent=2, ensure_ascii=False)
+            json.dump(data_to_save, f, indent=2, ensure_ascii=False)
         os.replace(temp_path, USER_DATA_PATH)
     except Exception as e:
-        log_error("user_manager", "_save_data", f"Failed to write user data to file", e)
+        log_error("user_manager", "save_prefs", "Failed to write preferences to file", e)
 
 # --- Public API for Application ---
-
 def init_all_agents():
-    """Loads all user data from file at startup. This is the only time we need this function."""
-    with _data_lock:
-        _load_user_data_from_file()
-    log_info("user_manager", "init_all_agents", f"Initialized user data store with {len(_user_data_store)} users.")
+    _load_user_preferences()
 
 def get_agent(user_id: str) -> Dict[str, Any]:
-    """
-    Retrieves a deep copy of a user's state. Creates a new user if not found.
-    This function safely copies the data so the main thread can work on it without locking.
-    """
-    with _data_lock:
-        if user_id not in _user_data_store:
-            log_info("user_manager", "get_agent", f"Creating new user record for {user_id}")
-            _user_data_store[user_id] = {
-                "user_id": user_id,
-                "preferences": DEFAULT_PREFERENCES.copy(),
-                "items": [],
-                "conversation_history": []
-            }
-            _save_user_data_to_file()
-        
-        # Return a copy to prevent holding the lock during long operations
-        return json.loads(json.dumps(_user_data_store[user_id]))
+    with _prefs_lock:
+        if user_id not in _user_prefs_store:
+            log_info("user_manager", "get_agent", f"Creating new user preferences for {user_id}")
+            _user_prefs_store[user_id] = DEFAULT_PREFERENCES.copy()
+            _save_user_preferences()
+        preferences = _user_prefs_store.get(user_id, DEFAULT_PREFERENCES.copy())
+    active_items = db.list_items_for_user(user_id, status_filter=["new", "in_progress"])
+    conversation_history = db.list_messages_for_user(user_id, limit=10)
+    return {
+        "user_id": user_id, "preferences": preferences, "items": active_items, "conversation_history": conversation_history 
+    }
 
 def get_all_user_data() -> Dict[str, Dict[str, Any]]:
-    """Returns a deep copy of all user data for the scheduler."""
-    with _data_lock:
-        return json.loads(json.dumps(_user_data_store))
+    with _prefs_lock:
+        return json.loads(json.dumps(_user_prefs_store))
 
-def add_message_to_user_history(user_id: str, role: str, message_type: str, content: str | None, **kwargs):
-    """Adds a message to a user's conversation history in memory."""
-    with _data_lock:
-        user_data = _user_data_store.get(user_id)
-        if user_data:
-            history_entry = {"role": role, "message_type": message_type, "content": content, **kwargs}
-            history = user_data.setdefault("conversation_history", [])
-            history.append(history_entry)
-            user_data["conversation_history"] = history[-40:] # Trim history
-
-def save_user_data(user_id: str, updated_user_data: Dict[str, Any]):
-    """Saves an entire user data object back to the store and to disk."""
-    with _data_lock:
-        _user_data_store[user_id] = updated_user_data
-        _save_data_to_file()
+def add_message_to_user_history(user_id: str, role: str, message_type: str, content: str | None = None, **kwargs):
+    db.log_message(user_id=user_id, role=role, message_type=message_type, content=content)
 
 def update_user_preferences(user_id: str, updates: Dict) -> bool:
-    """Safely updates a user's preferences and saves to disk."""
-    with _data_lock:
-        # Get the current state within the lock
-        user_data = _user_data_store.get(user_id)
-        if not user_data:
-            log_error("user_manager", "update_prefs", f"Cannot update prefs, user {user_id} not found.")
-            return False
-        
-        user_data.setdefault("preferences", {}).update(updates)
-        _save_data_to_file()
+    with _prefs_lock:
+        if user_id not in _user_prefs_store:
+            _user_prefs_store[user_id] = DEFAULT_PREFERENCES.copy()
+        _user_prefs_store[user_id].update(updates)
+        _save_user_preferences()
     return True
 
 # --- END OF FILE users/user_manager.py ---
-
 
 
 
@@ -1235,35 +1382,25 @@ def update_user_preferences(user_id: str, updates: Dict) -> bool:
 
 # --- START OF FILE bridge/cli_interface.py ---
 
-# --- START OF FULL bridge/cli_interface.py ---
-
-from fastapi import FastAPI, Request, HTTPException
+# bridge/cli_interface.py
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
-import uvicorn
 import uuid
-from threading import Lock, Thread
-import time
-import json # Added for error handling
+from threading import Lock
+import json
 
-# Use the central logger
 from tools.logger import log_info, log_error, log_warning
-# Import the central router and its setter function
-from bridge.request_router import handle_incoming_message, set_bridge
 
-# Ensure calendar_tool provides the router correctly (needed for OAuth)
+# Optional calendar tool import
 try:
     from tools.calendar_tool import router as calendar_router
     CALENDAR_ROUTER_IMPORTED = True
-    log_info("cli_interface", "import", "Successfully imported calendar_router.")
 except ImportError:
-    log_error("cli_interface", "import", "Could not import calendar_router from tools.calendar_tool. OAuth callback will fail if CLI mode used.")
     CALENDAR_ROUTER_IMPORTED = False
     from fastapi import APIRouter
     calendar_router = APIRouter()
 
-
-# Define a CLI Bridge
-# Global in-memory store for CLI outgoing messages.
+# Global in-memory store for CLI outgoing messages
 outgoing_cli_messages = []
 cli_queue_lock = Lock()
 
@@ -1274,128 +1411,102 @@ class CLIBridge:
         self.lock = lock
         log_info("CLIBridge", "__init__", "CLI Bridge initialized for queuing.")
 
-    # --- UPDATED send_message ---
     def send_message(self, user_id: str, message: str):
-        """
-        Adds the outgoing message to the CLI queue.
-        Does NOT log the message content here (handled by request_router).
-        """
-        # user_id received here is the NORMALIZED ID from request_router
         if not user_id or not message:
-             log_warning("CLIBridge", "send_message", f"Attempted to queue empty message or invalid user_id for CLI: {user_id}")
+             log_warning("CLIBridge", "send_message", "Attempted to queue empty message or invalid user_id.")
              return
-
-        outgoing = {
-            "user_id": user_id, # Use the normalized ID for CLI mock
-            "message": message,
-            "message_id": str(uuid.uuid4()) # Generate ID, might be used by mock sender ACK
-        }
-        log_info("CLIBridge", "send_message", f"QUEUING for {user_id} (ID: {outgoing['message_id']}): '{message[:200]}'")
+        outgoing = {"user_id": user_id, "message": message, "message_id": str(uuid.uuid4())}
         with self.lock:
             self.message_queue.append(outgoing)
-        # Log the queuing action
-        log_info("CLIBridge", "send_message", f"Message for CLI user {user_id} queued (ID: {outgoing['message_id']}). Queue size: {len(self.message_queue)}")
-    # --- END UPDATED send_message ---
+        log_info("CLIBridge", "send_message", f"Message for CLI user {user_id} queued. Queue size: {len(self.message_queue)}")
 
-# Set the global bridge in the router to use our CLI Bridge instance
-# This should only be called by main.py if CLI mode is selected
-# if __name__ != "__main__": # Crude check
-#     set_bridge(CLIBridge(outgoing_cli_messages, cli_queue_lock))
-#     log_info("cli_interface", "init", "CLI Bridge potentially set in request_router.")
+async def process_incoming_cli_message_background(user_id: str, message: str):
+    """Runs the message handler in the background."""
+    try:
+        from bridge.request_router import handle_incoming_message
+        handle_incoming_message(user_id, message)
+    except Exception as e:
+        log_error("cli_interface", "background_task", f"Unhandled exception in CLI background processing for {user_id}", e)
 
 def create_cli_app() -> FastAPI:
     """Creates the FastAPI app instance for the CLI Interface."""
     app = FastAPI(
-        title="WhatsTasker CLI Bridge API",
+        title="Kairo CLI Bridge API",
         description="Handles interaction for the CLI mock sender.",
         version="1.0.0"
     )
 
-    # Include calendar routes if needed
     if CALENDAR_ROUTER_IMPORTED:
         app.include_router(calendar_router, prefix="", tags=["Authentication"])
-        log_info("cli_interface", "create_cli_app", "Calendar router included.")
-    else:
-         log_warning("cli_interface", "create_cli_app", "Calendar router not included.")
 
-
-    # --- API Endpoints (Adjusted for CLI mock) ---
     @app.post("/incoming", tags=["CLI Bridge"])
-    async def incoming_cli_message(request: Request):
-        """Receives message from CLI mock, processes it, queues response, returns ack."""
+    async def incoming_cli_message(request: Request, background_tasks: BackgroundTasks):
+        """Receives message from CLI mock, acknowledges, and processes in the background."""
         endpoint_name = "incoming_cli_message"
         try:
             data = await request.json()
-            user_id = data.get("user_id") # Expecting normalized ID from mock sender
+            user_id = data.get("user_id")
             message = data.get("message")
             if not user_id or message is None:
-                log_warning("cli_interface", endpoint_name, f"Received invalid payload: {data}")
                 raise HTTPException(status_code=400, detail="Missing user_id or message")
-
-            log_info("cli_interface", endpoint_name, f"Received message via CLI bridge from user {user_id}: '{str(message)[:50]}...'")
-
-            # Pass normalized ID to router, router handles DB logging
-            handle_incoming_message(user_id, str(message))
-
-            # Return only an acknowledgment.
+            background_tasks.add_task(process_incoming_cli_message_background, user_id, str(message))
+            log_info("cli_interface", endpoint_name, f"ACK for incoming from {user_id}. Processing in background.")
             return JSONResponse(content={"ack": True})
-
-        except json.JSONDecodeError:
-            log_error("cli_interface", endpoint_name, "Received non-JSON payload.")
-            raise HTTPException(status_code=400, detail="Invalid JSON payload")
-        except HTTPException as http_exc:
-            raise http_exc
         except Exception as e:
             log_error("cli_interface", endpoint_name, "Error processing incoming CLI message", e)
-            raise HTTPException(status_code=500, detail="Internal server error processing message")
+            raise HTTPException(status_code=500, detail="Internal server error")
 
+    # --- START OF FIX: Implement robust ACK mechanism ---
     @app.get("/outgoing", tags=["CLI Bridge"])
     async def get_outgoing_cli_messages():
-        """Returns and clears the list of queued outgoing messages for the CLI mock."""
-        # This endpoint *differs* from the WhatsApp one - it clears on GET
-        endpoint_name = "get_outgoing_cli_messages"
-        msgs_to_send = []
+        """
+        Returns a COPY of the outgoing message queue.
+        It NO LONGER clears the queue. Deletion is handled by /ack.
+        """
         with cli_queue_lock:
-            # Return all messages currently in the queue and clear it
-            msgs_to_send = outgoing_cli_messages[:] # Copy the list
-            outgoing_cli_messages.clear()          # Clear the original list
-        if msgs_to_send:
-            log_info("cli_interface", endpoint_name, f"Returning {len(msgs_to_send)} messages from CLI queue (and clearing).")
+            # Return a copy of the list, but leave the original intact
+            msgs_to_send = outgoing_cli_messages[:]
         return JSONResponse(content={"messages": msgs_to_send})
 
     @app.post("/ack", tags=["CLI Bridge"])
     async def acknowledge_cli_message(request: Request):
-        """Receives acknowledgment (currently does nothing for CLI as queue is cleared on GET)."""
+        """
+        Receives acknowledgment and REMOVES the message from the queue.
+        This is now the only way messages are deleted.
+        """
         endpoint_name = "acknowledge_cli_message"
+        removed = False
+        message_id = None
         try:
             data = await request.json()
             message_id = data.get("message_id")
             if not message_id:
-                log_warning("cli_interface", endpoint_name, f"Received ACK without message_id: {data}")
-                raise HTTPException(status_code=400, detail="Missing message_id")
+                raise HTTPException(status_code=400, detail="Missing message_id in ACK")
 
-            # Log but don't modify queue here, as GET already cleared it for CLI mock
-            log_info("cli_interface", endpoint_name, f"CLI Ack received for message {message_id} (queue already cleared by GET).")
-            return JSONResponse(content={"ack_received": True, "removed": False}) # Indicate not removed by ACK
-        except json.JSONDecodeError:
-            log_error("cli_interface", endpoint_name, "Received non-JSON ACK payload.")
-            raise HTTPException(status_code=400, detail="Invalid JSON payload for ACK")
-        except HTTPException as http_exc:
-            raise http_exc
+            with cli_queue_lock:
+                # Find the message by ID and remove it
+                initial_len = len(outgoing_cli_messages)
+                # Create a new list excluding the acknowledged message
+                outgoing_cli_messages[:] = [msg for msg in outgoing_cli_messages if msg.get("message_id") != message_id]
+                final_len = len(outgoing_cli_messages)
+                removed = (initial_len != final_len)
+            
+            if removed:
+                log_info(endpoint_name, "ack", f"ACK received and message removed for ID: {message_id}. Queue size: {len(outgoing_cli_messages)}")
+            else:
+                log_warning(endpoint_name, "ack", f"ACK received for unknown/already removed message ID: {message_id}")
+
+            return JSONResponse(content={"ack_received": True, "removed": removed})
         except Exception as e:
-            log_error("cli_interface", endpoint_name, f"Error processing CLI ACK for message_id {data.get('message_id', 'N/A')}", e)
+            log_error(endpoint_name, "ack", f"Error processing ACK for message ID {message_id or 'N/A'}", e)
             raise HTTPException(status_code=500, detail="Internal server error processing ACK")
+    # --- END OF FIX ---
 
     return app
 
-# Create the FastAPI app instance for this interface
-# main.py should import 'app' from here if cli mode is selected
 app = create_cli_app()
 
-# --- END OF FULL bridge/cli_interface.py ---
-
 # --- END OF FILE bridge/cli_interface.py ---
-
 
 
 
@@ -1405,178 +1516,66 @@ app = create_cli_app()
 
 # --- START OF FILE bridge/twilio_interface.py ---
 
-# --- START OF FULL bridge/twilio_interface.py ---
-
+# bridge/twilio_interface.py
 from fastapi import FastAPI, Request, HTTPException, Form, BackgroundTasks
-from fastapi.responses import Response as FastAPIResponse # Use a more generic name to avoid conflict
+from fastapi.responses import Response as FastAPIResponse
 from twilio.request_validator import RequestValidator
 from twilio.rest import Client as TwilioClient
 import os
-from typing import Dict, List, Any # Keep for type hints
-import uuid
-from threading import Lock
 
 from tools.logger import log_info, log_error, log_warning
-from bridge.request_router import handle_incoming_message, set_bridge # Assuming set_bridge can handle multiple
+# --- START OF FIX: Removed 'set_bridge' from the import ---
+from bridge.request_router import handle_incoming_message
+# --- END OF FIX ---
 
-# --- Twilio Configuration ---
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER") # Your Twilio WhatsApp sender number e.g., "whatsapp:+14155238886"
-
-if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER]):
-    log_error("twilio_interface", "config", "Twilio credentials or WhatsApp number missing from environment. Twilio bridge will not function.")
-    # Optionally, raise an error or prevent app creation if Twilio is the selected bridge type.
-
-# Initialize Twilio client and validator if credentials are provided
-twilio_client: TwilioClient | None = None
-twilio_validator: RequestValidator | None = None
-if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
-    try:
-        twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN)
-        log_info("twilio_interface", "init", "Twilio client and validator initialized.")
-    except Exception as e_twilio_init:
-        log_error("twilio_interface", "init", "Failed to initialize Twilio client/validator.", e_twilio_init)
-        twilio_client = None
-        twilio_validator = None
-
-# Global in-memory store for Twilio outgoing messages (similar to other bridges)
-outgoing_twilio_messages: List[Dict[str, Any]] = []
-twilio_queue_lock = Lock()
+twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else None
 
 class TwilioBridge:
     """Bridge for Twilio WhatsApp interactions."""
-    def __init__(self, message_queue: List[Dict[str, Any]], lock: Lock, client: TwilioClient | None, twilio_sender_number: str | None):
-        self.message_queue = message_queue # Not directly used by Twilio for sending, but kept for consistency
-        self.lock = lock
+    def __init__(self, client: TwilioClient, twilio_sender_number: str):
         self.client = client
         self.twilio_sender_number = twilio_sender_number
         log_info("TwilioBridge", "__init__", "Twilio Bridge instance initialized.")
 
     def send_message(self, user_id: str, message_body: str):
-        """
-        Sends a message via Twilio to the user.
-        user_id here is expected to be normalized by request_router.
-        We need to format it back to Twilio's 'whatsapp:+<number>' format.
-        """
-        fn_name = "send_message_twilio"
         if not self.client or not self.twilio_sender_number:
-            log_error("twilio_interface", fn_name, "Twilio client or sender number not configured. Cannot send message.")
+            log_error("twilio_interface", "send", "Twilio client or sender number not configured.")
             return
-
-        if not user_id or not message_body:
-            log_warning("twilio_interface", fn_name, f"Attempted to send empty message or invalid user_id via Twilio: {user_id}")
-            return
-
-        # Ensure user_id is in Twilio's format (e.g., whatsapp:+1234567890)
-        # request_router should provide a normalized number. Add prefix back.
-        # Assuming normalized_user_id is just the number part e.g. "1234567890"
-        if not user_id.startswith("whatsapp:"):
-            twilio_recipient_id = f"whatsapp:+{user_id}"
-        else:
-            twilio_recipient_id = user_id # Already in correct format
-
+        twilio_recipient_id = f"whatsapp:+{user_id}"
         try:
-            log_info("twilio_interface", fn_name, f"Sending Twilio message from {self.twilio_sender_number} to {twilio_recipient_id}: '{message_body[:50]}...'")
-            message_instance = self.client.messages.create(
-                from_=self.twilio_sender_number,
-                body=message_body,
-                to=twilio_recipient_id
-            )
-            log_info("twilio_interface", fn_name, f"Twilio message sent. SID: {message_instance.sid}")
-            # Note: Twilio doesn't use our internal message_id for ACKs in the same way wa_bridge.js does.
-            # The ACK for Twilio is handled by the HTTP response to their webhook.
+            message_instance = self.client.messages.create(from_=self.twilio_sender_number, body=message_body, to=twilio_recipient_id)
+            log_info("twilio_interface", "send", f"Twilio message sent. SID: {message_instance.sid}")
         except Exception as e:
-            log_error("twilio_interface", fn_name, f"Error sending Twilio message to {twilio_recipient_id}", e)
+            log_error("twilio_interface", "send", f"Error sending Twilio message to {twilio_recipient_id}", e)
 
-# --- Helper for Background Task ---
-async def process_incoming_twilio_message_background(user_id_from_bridge: str, message_body_from_bridge: str):
-    fn_name = "process_incoming_twilio_message_background"
+async def process_incoming_twilio_message_background(user_id: str, message: str):
+    """Runs the message handler in the background."""
     try:
-        # log_info("twilio_interface", fn_name, f"Twilio background task started for user {user_id_from_bridge}") # Verbose
-        handle_incoming_message(user_id_from_bridge, message_body_from_bridge)
-        # log_info("twilio_interface", fn_name, f"Twilio background task finished for user {user_id_from_bridge}") # Verbose
+        handle_incoming_message(user_id, message)
     except Exception as e:
-        log_error("twilio_interface", fn_name, f"Unhandled exception in Twilio background message processing for {user_id_from_bridge}", e)
-
+        log_error("twilio_interface", "background_task", f"Exception in background processing for {user_id}", e)
 
 def create_twilio_app() -> FastAPI:
-    """Creates the FastAPI app instance for the Twilio Interface."""
-    app_instance = FastAPI(
-        title="WhatsTasker Twilio Bridge API",
-        description="Handles incoming WhatsApp messages from Twilio and integrates with the backend.",
-        version="1.0.0"
-    )
-
-    # Include calendar routes if needed (same as other interfaces)
-    try:
-        from tools.calendar_tool import router as calendar_router
-        app_instance.include_router(calendar_router, prefix="", tags=["Authentication"])
-        log_info("twilio_interface", "create_twilio_app", "Calendar router included.")
-    except ImportError:
-        log_warning("twilio_interface", "create_twilio_app", "Calendar router not imported, OAuth callback might fail if Twilio bridge is primary.")
-
+    app_instance = FastAPI(title="Kairo Twilio Bridge API", version="1.0.0")
+    # Optional calendar router import can be added here if needed
 
     @app_instance.post("/twilio/incoming", tags=["Twilio Bridge"])
     async def incoming_twilio_message(request: Request, background_tasks: BackgroundTasks, From: str = Form(...), Body: str = Form(...)):
-        """
-        Receives incoming WhatsApp messages from Twilio via webhook.
-        Twilio sends data as application/x-www-form-urlencoded.
-        """
-        endpoint_name = "incoming_twilio_message"
-
-        # Validate Twilio signature (optional but recommended for production)
+        # Optional signature validation
         if twilio_validator:
-            twilio_signature = request.headers.get("X-Twilio-Signature")
-            # Construct full URL correctly, FastAPI request.url includes query params if any
-            # For POST, Twilio usually doesn't append query params to the webhook URL itself
-            form_params = await request.form() # Get form parameters
-            
-            # Convert ImmutableMultiDict to a regular dict for the validator
-            # The validator expects a dictionary of the POST parameters.
-            post_vars_dict = {key: value for key, value in form_params.items()}
-
-            if not twilio_signature or not twilio_validator.validate(
-                str(request.url), # Full URL as Twilio sees it
-                post_vars_dict,    # The POST parameters
-                twilio_signature
-            ):
-                log_warning("twilio_interface", endpoint_name, "Twilio signature validation FAILED. Rejecting request.")
-                raise HTTPException(status_code=403, detail="Twilio signature validation failed.")
-            # log_info("twilio_interface", endpoint_name, "Twilio signature validation successful.") # Verbose
-        else:
-            log_warning("twilio_interface", endpoint_name, "Twilio validator not initialized. Skipping signature validation (NOT RECOMMENDED FOR PRODUCTION).")
-
-        user_id_from_twilio = From  # e.g., "whatsapp:+1234567890"
-        message_body = Body
-
-        if not user_id_from_twilio or message_body is None: # Body can be empty (e.g. media message with no caption)
-            log_warning("twilio_interface", endpoint_name, f"Received invalid payload from Twilio. From: {user_id_from_twilio}, Body: {message_body}")
-            # Twilio expects an empty TwiML response for success, or an error.
-            # Just returning 400 might be enough, or an empty TwiML <Response/>
-            return FastAPIResponse(content="<Response/>", media_type="application/xml", status_code=400)
-
-        # Offload actual processing to a background task
-        background_tasks.add_task(process_incoming_twilio_message_background, user_id_from_twilio, str(message_body))
-
-        log_info("twilio_interface", endpoint_name, f"ACK for Twilio incoming from {user_id_from_twilio}. Processing in background. Msg: '{str(message_body)[:30]}...'")
-        # Twilio expects an empty TwiML response to acknowledge receipt and stop retrying.
+            # (Validation logic would go here)
+            pass
+        
+        background_tasks.add_task(process_incoming_twilio_message_background, From, Body)
+        log_info("twilio_interface", "incoming", f"ACK for Twilio from {From}. Processing in background.")
         return FastAPIResponse(content="<Response/>", media_type="application/xml")
-
-    # No /outgoing or /ack needed for Twilio as send_message calls Twilio API directly
-    # and Twilio's ACK mechanism is the HTTP 200 response to its webhook.
-
+    
     return app_instance
 
-# Create the FastAPI app instance for this interface
-# main.py should import 'app' from here if Twilio mode is selected
 app = create_twilio_app()
 
-# --- END OF FULL bridge/twilio_interface.py ---
-
 # --- END OF FILE bridge/twilio_interface.py ---
-
 
 
 
@@ -1586,28 +1585,23 @@ app = create_twilio_app()
 
 # --- START OF FILE bridge/whatsapp_interface.py ---
 
-# --- START OF FULL bridge/whatsapp_interface.py ---
-
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks # <--- ADD BackgroundTasks
+# bridge/whatsapp_interface.py
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
-# import uvicorn # Keep for potential direct running/debugging, though main.py handles it
 import uuid
 from threading import Lock
 import json
 import re
 
-# Use the central logger
 from tools.logger import log_info, log_error, log_warning
-# Import the central router and its setter function
-from bridge.request_router import handle_incoming_message, set_bridge
+# --- START OF FIX: Removed 'set_bridge' from the import ---
+from bridge.request_router import handle_incoming_message
+# --- END OF FIX ---
 
-# Try importing the calendar router (necessary for OAuth callback)
 try:
     from tools.calendar_tool import router as calendar_router
     CALENDAR_ROUTER_IMPORTED = True
-    log_info("whatsapp_interface", "import", "Successfully imported calendar_router.")
 except ImportError:
-    log_error("whatsapp_interface", "import", "Could not import calendar_router from tools.calendar_tool. OAuth callback will fail.")
     CALENDAR_ROUTER_IMPORTED = False
     from fastapi import APIRouter
     calendar_router = APIRouter()
@@ -1624,474 +1618,266 @@ class WhatsAppBridge:
 
     def send_message(self, user_id: str, message: str):
         if not user_id or not message:
-             log_warning("WhatsAppBridge", "send_message", f"Attempted to queue empty message or invalid user_id for WhatsApp: {user_id}")
+             log_warning("WhatsAppBridge", "send_message", "Attempted to queue empty message or invalid user_id.")
              return
-
-        formatted_user_id = user_id
-        if re.match(r'^\d+$', user_id):
-            formatted_user_id = f"{user_id}@c.us"
-        elif '@' not in user_id:
-             log_warning("WhatsAppBridge", "send_message", f"User ID '{user_id}' lacks '@' suffix and is not digits. Sending as is, may fail in whatsapp-web.js.")
-
-        outgoing = {
-            "user_id": formatted_user_id,
-            "message": message,
-            "message_id": str(uuid.uuid4())
-        }
+        formatted_user_id = f"{user_id}@c.us" if re.match(r'^\d+$', user_id) else user_id
+        outgoing = {"user_id": formatted_user_id, "message": message, "message_id": str(uuid.uuid4())}
         with self.lock:
             self.message_queue.append(outgoing)
-        log_info("WhatsAppBridge", "send_message", f"Message for WA user {formatted_user_id} queued (ID: {outgoing['message_id']}). Queue size: {len(self.message_queue)}")
+        log_info("WhatsAppBridge", "send_message", f"Message queued for {formatted_user_id}. Queue size: {len(self.message_queue)}")
 
-# --- Helper for Background Task ---
-async def process_incoming_message_background(user_id_from_bridge: str, message_body_from_bridge: str):
-    """
-    This function runs in the background, processing the message.
-    It calls the main handler which might take time (LLM calls, etc.).
-    Errors within handle_incoming_message should be logged by it or its sub-components.
-    """
-    fn_name = "process_incoming_message_background"
+async def process_incoming_message_background(user_id: str, message: str):
+    """Runs the message handler in the background."""
     try:
-        log_info("whatsapp_interface", fn_name, f"Background task started for user {user_id_from_bridge}")
-        # The actual processing logic
-        # handle_incoming_message itself handles logging its own errors and sending responses
-        handle_incoming_message(user_id_from_bridge, message_body_from_bridge)
-        log_info("whatsapp_interface", fn_name, f"Background task finished for user {user_id_from_bridge}")
+        handle_incoming_message(user_id, message)
     except Exception as e:
-        # Log any unexpected error during the background task execution itself
-        # This is a catch-all; specific errors should be handled deeper in the call stack.
-        log_error("whatsapp_interface", fn_name, f"Unhandled exception in background message processing for {user_id_from_bridge}", e, user_id=user_id_from_bridge)
-
+        log_error("whatsapp_interface", "background_task", f"Exception in background processing for {user_id}", e)
 
 def create_whatsapp_app() -> FastAPI:
-    app = FastAPI(
-        title="WhatsTasker WhatsApp Bridge API",
-        description="Handles incoming messages from and outgoing messages to the WhatsApp Web JS bridge.",
-        version="1.0.0"
-    )
-
+    app = FastAPI(title="Kairo WhatsApp Bridge API", version="1.0.0")
     if CALENDAR_ROUTER_IMPORTED:
         app.include_router(calendar_router, prefix="", tags=["Authentication"])
-        log_info("whatsapp_interface", "create_app", "Calendar router included.")
-    else:
-         log_warning("whatsapp_interface", "create_app", "Calendar router not included.")
 
     @app.post("/incoming", tags=["WhatsApp Bridge"])
-    async def incoming_whatsapp_message(request: Request, background_tasks: BackgroundTasks): # <--- Inject BackgroundTasks
-        endpoint_name = "incoming_whatsapp_message"
-        try:
-            data = await request.json()
-            user_id = data.get("user_id")
-            message_body = data.get("message")
-
-            if not user_id or message_body is None:
-                log_warning("whatsapp_interface", endpoint_name, f"Received invalid payload: {data}")
-                raise HTTPException(status_code=400, detail="Missing user_id or message")
-
-            # --- Offload the actual processing to a background task ---
-            background_tasks.add_task(process_incoming_message_background, user_id, str(message_body))
-            # ----------------------------------------------------------
-
-            # Return immediate ACK
-            log_info("whatsapp_interface", endpoint_name, f"ACK for incoming from {user_id}. Processing in background. Msg: '{str(message_body)[:30]}...'")
-            return JSONResponse(content={"ack": True}, status_code=200)
-
-        except json.JSONDecodeError:
-            log_error("whatsapp_interface", endpoint_name, "Received non-JSON payload.")
-            raise HTTPException(status_code=400, detail="Invalid JSON payload")
-        except HTTPException as http_exc:
-            # Re-raise HTTPExceptions directly
-            raise http_exc
-        except Exception as e:
-            # Catch-all for unexpected errors during initial request handling (before background task)
-            log_error("whatsapp_interface", endpoint_name, "Error processing incoming WhatsApp message (before background task)", e)
-            raise HTTPException(status_code=500, detail="Internal server error processing message")
+    async def incoming_whatsapp_message(request: Request, background_tasks: BackgroundTasks):
+        data = await request.json()
+        user_id, message_body = data.get("user_id"), data.get("message")
+        if not user_id or message_body is None:
+            raise HTTPException(status_code=400, detail="Missing user_id or message")
+        background_tasks.add_task(process_incoming_message_background, user_id, str(message_body))
+        log_info("whatsapp_interface", "incoming", f"ACK for incoming from {user_id}. Processing in background.")
+        return JSONResponse(content={"ack": True})
 
     @app.get("/outgoing", tags=["WhatsApp Bridge"])
     async def get_outgoing_whatsapp_messages():
-        endpoint_name = "get_outgoing_whatsapp_messages"
-        msgs_to_send = []
         with whatsapp_queue_lock:
-            msgs_to_send = outgoing_whatsapp_messages[:]
-        if msgs_to_send:
-            # Reduce chattiness of this log unless debugging
-            # log_info("whatsapp_interface", endpoint_name, f"Returning {len(msgs_to_send)} messages from WA queue (without clearing).")
-            pass
-        return JSONResponse(content={"messages": msgs_to_send})
+            return JSONResponse(content={"messages": outgoing_whatsapp_messages[:]})
 
     @app.post("/ack", tags=["WhatsApp Bridge"])
     async def acknowledge_whatsapp_message(request: Request):
-        endpoint_name = "acknowledge_whatsapp_message"
-        message_id = None
-        try:
-            data = await request.json()
-            message_id = data.get("message_id")
-            user_id_from_ack = data.get("user_id") # Get user_id from ACK for better logging
-
-            if not message_id:
-                log_warning("whatsapp_interface", endpoint_name, f"Received ACK without message_id: {data}")
-                raise HTTPException(status_code=400, detail="Missing message_id in ACK payload")
-
-            removed = False
-            with whatsapp_queue_lock:
-                index_to_remove = -1
-                for i, msg in enumerate(outgoing_whatsapp_messages):
-                    if msg.get("message_id") == message_id:
-                        index_to_remove = i
-                        break
-                if index_to_remove != -1:
-                    removed_msg = outgoing_whatsapp_messages.pop(index_to_remove)
-                    removed = True
-                    log_info("whatsapp_interface", endpoint_name, f"WA ACK received and message removed for ID: {message_id}. User: {user_id_from_ack or removed_msg.get('user_id')}. Queue size: {len(outgoing_whatsapp_messages)}")
-                else:
-                    log_warning("whatsapp_interface", endpoint_name, f"WA ACK for unknown/already removed message ID: {message_id}. User: {user_id_from_ack}")
-            return JSONResponse(content={"ack_received": True, "removed": removed})
-        except json.JSONDecodeError:
-            log_error("whatsapp_interface", endpoint_name, "Received non-JSON ACK payload.")
-            raise HTTPException(status_code=400, detail="Invalid JSON payload for ACK")
-        except HTTPException as http_exc:
-            raise http_exc
-        except Exception as e:
-            log_error("whatsapp_interface", endpoint_name, f"Error processing WA ACK for message_id {message_id or 'N/A'}", e)
-            raise HTTPException(status_code=500, detail="Internal server error processing ACK")
+        data = await request.json()
+        message_id = data.get("message_id")
+        if not message_id:
+            raise HTTPException(status_code=400, detail="Missing message_id")
+        removed = False
+        with whatsapp_queue_lock:
+            initial_len = len(outgoing_whatsapp_messages)
+            outgoing_whatsapp_messages[:] = [msg for msg in outgoing_whatsapp_messages if msg.get("message_id") != message_id]
+            if len(outgoing_whatsapp_messages) != initial_len:
+                removed = True
+                log_info("whatsapp_interface", "ack", f"ACK received and message removed for ID: {message_id}")
+        return JSONResponse(content={"ack_received": True, "removed": removed})
 
     return app
 
 app = create_whatsapp_app()
 
-# --- END OF FULL bridge/whatsapp_interface.py ---
-
 # --- END OF FILE bridge/whatsapp_interface.py ---
 
 
 
-
 ================================================================================
-📄 wa_bridge.js
+📄 WA/wa_bridge.js
 ================================================================================
 
-# --- START OF FILE wa_bridge.js ---
+# --- START OF FILE WA/wa_bridge.js ---
 
-// whatsapp_bridge.js
+// wa_bridge.js
 
 // --- Dependencies ---
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const axios = require('axios');
+const winston = require('winston');
 
 // --- Configuration ---
-const FASTAPI_BASE_URL = process.env.FASTAPI_BASE_URL || 'http://localhost:8000';
-const POLLING_INTERVAL_MS = parseInt(process.env.POLLING_INTERVAL_MS, 10) || 1000;
-const RETRY_INTERVAL_MS = parseInt(process.env.RETRY_INTERVAL_MS, 10) || 5000;
-const MAX_SEND_RETRIES_PER_MESSAGE = parseInt(process.env.MAX_SEND_RETRIES_PER_MESSAGE, 10) || 3;
-const SEND_RETRY_DELAY_MS = parseInt(process.env.SEND_RETRY_DELAY_MS, 10) || 2000;
-const MAX_ACK_RETRIES = parseInt(process.env.MAX_ACK_RETRIES, 10) || 3;
-const ACK_RETRY_DELAY_MS = parseInt(process.env.ACK_RETRY_DELAY_MS, 10) || 2000;
-const CONSECUTIVE_POLLING_ERROR_THRESHOLD = parseInt(process.env.CONSECUTIVE_POLLING_ERROR_THRESHOLD, 10) || 10;
-const INCOMING_POST_TIMEOUT_MS = parseInt(process.env.INCOMING_POST_TIMEOUT_MS, 10) || 10000;
+const FASTAPI_BASE_URL = process.env.FASTAPI_BASE_URL || 'http://localhost:8001';
+const FAST_POLLING_INTERVAL_MS = 1500; // Poll quickly when connected
+const SLOW_POLLING_INTERVAL_MS = 10000; // Poll slowly when backend is down
+const MAX_SEND_RETRIES = 3;
+const SEND_RETRY_DELAY_MS = 2000;
+const MAX_ACK_RETRIES = 3;
+const ACK_RETRY_DELAY_MS = 3000;
+const FAILED_ACK_QUARANTINE_CLEAR_MS = 3600000; // 1 hour
+const RESTART_INTERVAL_MS = 21600000; // Periodically restart every 6 hours
+
+// --- Winston Logger ---
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.printf(({ timestamp, level, message }) => `${timestamp} [${level.toUpperCase()}] [wa_bridge] ${message}`)
+  ),
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({ filename: 'logs/kairo_wa_bridge_error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'logs/kairo_wa_bridge_combined.log' }),
+  ],
+});
 
 // --- State Variables ---
 let isClientReady = false;
-let consecutivePollingErrors = 0;
-let clientInstance; // Will hold the client
+let clientInstance;
 let _stopPollingFlag = false;
+const failedAckStore = new Set();
+let isBackendConnected = true; // Assume backend is up at the start
 
-// --- Custom Logger ---
-function logMessage(level, message, ...optionalParams) {
-    const now = new Date();
-    const timestamp = now.toISOString();
-    const levelStr = level.toUpperCase();
-    const logPrefix = `[${timestamp}] [PID:${process.pid}] [${levelStr}] [wa_bridge]`;
-
-    // Pick the right logging method, defaulting to log
-    let method = console[(level && typeof level === 'string' && console[level.toLowerCase()]) ? level.toLowerCase() : 'log'];
-
-    // Check if last param is Error
-    if (optionalParams.length > 0 && optionalParams[optionalParams.length - 1] instanceof Error) {
-        const err = optionalParams.pop();
-        method(logPrefix, message, ...optionalParams, err.message, err.stack ? `\nStack: ${err.stack}` : '');
-    } else {
-        method(logPrefix, message, ...optionalParams);
+// Periodically clear the ACK quarantine to give messages another chance
+setInterval(() => {
+    if (failedAckStore.size > 0) {
+        logger.info(`Clearing ACK failure quarantine. ${failedAckStore.size} items are now retryable.`);
+        failedAckStore.clear();
     }
-}
+}, FAILED_ACK_QUARANTINE_CLEAR_MS);
+
+// Periodically restart the script for long-term stability
+setTimeout(() => {
+    logger.warn('Initiating scheduled periodic restart for stability.');
+    shutdownBridge('PERIODIC_RESTART');
+}, RESTART_INTERVAL_MS);
+
 
 // --- Utility: Sleep Function ---
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 // --- Initialize the WhatsApp client ---
 const client = new Client({
-    authStrategy: new LocalAuth({ dataPath: '.wwebjs_auth' }), // For saving the session
+    authStrategy: new LocalAuth({ dataPath: '.wwebjs_auth' }),
     puppeteer: {
         headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu'
-        ]
-    },
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    }
 });
-clientInstance = client; // Store the client instance globally
+clientInstance = client;
 
 // --- Event Handlers ---
-client.on('qr', (qr) => {
-    logMessage('INFO', 'QR Code Received. Scan with WhatsApp:');
-    qrcode.generate(qr, { small: true });
-});
-
-client.on('ready', async () => {
-    logMessage('INFO', `WhatsApp client is ready! Logged in as: ${client.info.pushname} (${client.info.wid.user})`);
+client.on('qr', qr => { qrcode.generate(qr, { small: true }); });
+client.on('ready', () => {
+    logger.info('WhatsApp client is ready!');
     isClientReady = true;
-    consecutivePollingErrors = 0;
-    if (!_stopPollingFlag) {
-        pollForOutgoingMessages();
-    }
+    pollForOutgoingMessages();
 });
-
-client.on('authenticated', () => {
-    logMessage('INFO', 'WhatsApp client authenticated successfully.');
-});
-
 client.on('auth_failure', msg => {
-    logMessage('ERROR', 'AUTHENTICATION FAILURE:', msg);
-    isClientReady = false;
-    logMessage('ERROR', 'Exiting due to authentication failure.');
-    shutdownBridge('AUTH_FAILURE_EXIT', 1);
+    logger.error(`AUTHENTICATION FAILURE: ${msg}. Shutting down.`);
+    shutdownBridge('AUTH_FAILURE', 1);
 });
-
-client.on('disconnected', (reason) => {
-    logMessage('WARN', 'Client was logged out/disconnected:', reason);
-    isClientReady = false;
-    logMessage('ERROR', 'Exiting due to disconnection.');
-    shutdownBridge('DISCONNECTED_EXIT', 1);
+client.on('disconnected', reason => {
+    logger.error(`Client disconnected: ${reason}. Shutting down.`);
+    shutdownBridge('DISCONNECTED', 1);
 });
-
-client.on('loading_screen', (percent, message) => {
-    logMessage('INFO', `Loading WhatsApp Web: ${percent}% - ${message}`);
-});
-
-client.on('change_state', state => {
-    logMessage('INFO', `WhatsApp client state changed: ${state}`);
-});
-
 client.on('error', err => {
-    logMessage('ERROR', 'Unhandled WhatsApp client error:', err);
-    if (err.message && (err.message.includes('Protocol error') || err.message.includes('Page crashed'))) {
-        logMessage('ERROR', 'Critical Puppeteer/Protocol error detected. Exiting.');
-        shutdownBridge('PUPPETEER_CRASH_EXIT', 1);
-    }
+    logger.error(`Unhandled WhatsApp client error: ${err.message}`);
 });
 
 client.on('message', async (message) => {
-    // logMessage('DEBUG', 'RAW_MESSAGE_EVENT_RECEIVED', 'Type:', message.type, 'From:', message.from, 'Body:', message.body ? message.body.substring(0,30) : 'N/A', 'isStatus:', message.isStatus);
-    if (_stopPollingFlag || !isClientReady) {
-        logMessage('WARN', `Ignoring incoming message from ${message.from} (client not ready or shutting down).`);
-        return;
-    }
-    if (message.isStatus || message.type === 'revoked') {
-        return;
-    }
+    const chat = await message.getChat();
+    if (message.isStatus || chat.isGroup) return; // Ignore status updates and group chats
 
+    logger.info(`Received message from ${message.from}: "${message.body.substring(0, 50)}..."`);
     try {
-        const chat = await message.getChat();
-        if (chat.isGroup) {
-            return;
-        }
-
-        logMessage('INFO', `Received message from ${message.from}: "${message.body.substring(0, 50)}..."`);
         await axios.post(`${FASTAPI_BASE_URL}/incoming`, {
             user_id: message.from,
             message: message.body
-        }, { timeout: INCOMING_POST_TIMEOUT_MS });
+        }, { timeout: 10000 });
     } catch (error) {
-        let errMsg = error.message;
-        if (error.response) errMsg = JSON.stringify(error.response.data) || error.message;
-        else if (error.code) errMsg = `${error.code}: ${error.message}`;
-        logMessage('ERROR', `Error sending incoming message from ${message.from} to FastAPI:`, errMsg, error);
-        if (error.code === 'ECONNABORTED' && error.message.includes('timeout')) {
-            logMessage('ERROR', `POST to /incoming for ${message.from} timed out after ${INCOMING_POST_TIMEOUT_MS / 1000}s.`);
-        }
+        logger.error(`Failed to send incoming message to backend: ${error.message}`);
     }
 });
 
-// --- Polling Function ---
+// --- Main Polling Function ---
 async function pollForOutgoingMessages() {
-    if (_stopPollingFlag) {
-        logMessage('INFO', 'Polling stopped by flag.');
-        return;
-    }
+    if (_stopPollingFlag) return;
     if (!isClientReady) {
-        logMessage('WARN', 'Polling paused: WhatsApp client not ready.');
-        if (!_stopPollingFlag) setTimeout(pollForOutgoingMessages, RETRY_INTERVAL_MS);
+        setTimeout(pollForOutgoingMessages, 5000); // Wait if client isn't ready
         return;
     }
-
-    let nextPollDelay = POLLING_INTERVAL_MS;
 
     try {
         const response = await axios.get(`${FASTAPI_BASE_URL}/outgoing`, { timeout: 5000 });
-        const messages = response.data.messages;
-        if (consecutivePollingErrors > 0) {
-            logMessage('INFO', `Polling successful. Connection to backend restored. Resetting error count.`);
+        
+        if (!isBackendConnected) {
+            logger.info('Connection to Kairo backend RESTORED. Resuming normal polling.');
+            isBackendConnected = true;
         }
-        consecutivePollingErrors = 0;
 
+        const messages = response.data.messages;
         if (messages && messages.length > 0) {
-            logMessage('INFO', `Polling: Found ${messages.length} message(s) to send.`);
             for (const msg of messages) {
-                if (!msg.user_id || msg.message === undefined || !msg.message_id) {
-                    logMessage('WARN', 'Polling: Skipping invalid message structure from backend:', msg);
-                    continue;
-                }
+                if (failedAckStore.has(msg.message_id)) continue;
 
                 let sentSuccessfully = false;
-                for (let attempt = 1; attempt <= MAX_SEND_RETRIES_PER_MESSAGE; attempt++) {
-                    if (_stopPollingFlag) break;
+                for (let attempt = 1; attempt <= MAX_SEND_RETRIES; attempt++) {
                     try {
-                        logMessage('INFO', `Attempt ${attempt}/${MAX_SEND_RETRIES_PER_MESSAGE} sending to ${msg.user_id} (ID: ${msg.message_id}): "${msg.message.substring(0, 50)}..."`);
                         await client.sendMessage(msg.user_id, msg.message);
                         sentSuccessfully = true;
-                        logMessage('INFO', `Message ID ${msg.message_id} sent successfully to ${msg.user_id}.`);
+                        logger.info(`Message sent to ${msg.user_id} (ID: ${msg.message_id})`);
                         break;
                     } catch (sendError) {
-                        logMessage('ERROR', `Send attempt ${attempt} for message ID ${msg.message_id} to ${msg.user_id} FAILED:`, sendError.message, sendError);
-                        if (sendError.message && (sendError.message.includes('Session closed') || sendError.message.includes('Page crashed') || sendError.message.includes('invalid wid'))) {
-                            logMessage('ERROR', 'Critical send error. Not retrying this message. Triggering shutdown.');
-                            shutdownBridge('CRITICAL_SEND_ERROR', 1);
-                            return;
-                        }
-                        if (attempt < MAX_SEND_RETRIES_PER_MESSAGE && !_stopPollingFlag) {
-                            logMessage('INFO', `Waiting ${SEND_RETRY_DELAY_MS / 1000}s before next send attempt...`);
-                            await sleep(SEND_RETRY_DELAY_MS);
-                        } else if (attempt >= MAX_SEND_RETRIES_PER_MESSAGE) {
-                            logMessage('ERROR', `All ${MAX_SEND_RETRIES_PER_MESSAGE} send attempts FAILED for message ID ${msg.message_id}.`);
-                        }
+                        logger.error(`Send attempt ${attempt} failed for ID ${msg.message_id}: ${sendError.message}`);
+                        if (attempt < MAX_SEND_RETRIES) await sleep(SEND_RETRY_DELAY_MS);
                     }
                 }
-
-                if (_stopPollingFlag) break;
 
                 if (sentSuccessfully) {
                     let ackSentSuccessfully = false;
                     for (let ackAttempt = 1; ackAttempt <= MAX_ACK_RETRIES; ackAttempt++) {
-                        if (_stopPollingFlag) break;
                         try {
-                            await axios.post(`${FASTAPI_BASE_URL}/ack`, {
-                                user_id: msg.user_id,
-                                message_id: msg.message_id
-                            }, { timeout: 3000 });
+                            await axios.post(`${FASTAPI_BASE_URL}/ack`, { message_id: msg.message_id }, { timeout: 3000 });
                             ackSentSuccessfully = true;
-                            logMessage('INFO', `ACK sent successfully for message ID: ${msg.message_id}`);
                             break;
                         } catch (ackError) {
-                            logMessage('ERROR', `ACK attempt ${ackAttempt} for message ID ${msg.message_id} FAILED:`, (ackError.response ? JSON.stringify(ackError.response.data) : ackError.message), ackError);
-                            if (ackAttempt < MAX_ACK_RETRIES && !_stopPollingFlag) {
-                                logMessage('INFO', `Waiting ${ACK_RETRY_DELAY_MS / 1000}s before next ACK attempt...`);
-                                await sleep(ACK_RETRY_DELAY_MS);
-                            } else if (ackAttempt >= MAX_ACK_RETRIES) {
-                                logMessage('CRITICAL', `All ${MAX_ACK_RETRIES} ACK attempts FAILED for message ID ${msg.message_id}. Message sent but backend may not know.`);
-                            }
+                            logger.error(`ACK attempt ${ackAttempt} failed for ID ${msg.message_id}: ${ackError.message}`);
+                            if (ackAttempt < MAX_ACK_RETRIES) await sleep(ACK_RETRY_DELAY_MS);
                         }
                     }
+
+                    if (!ackSentSuccessfully) {
+                        logger.error(`All ACK attempts failed for message ID: ${msg.message_id}. Quarantining.`);
+                        failedAckStore.add(msg.message_id);
+                    }
                 }
-                 if (_stopPollingFlag) break;
             }
         }
     } catch (error) {
-        consecutivePollingErrors++;
-        let errMsg = error.message;
-        if (error.response) errMsg = `${error.response.status}: ${JSON.stringify(error.response.data) || error.message}`;
-        else if (error.code) errMsg = `${error.code}: ${error.message}`;
-        logMessage('ERROR', `Polling Error (Attempt ${consecutivePollingErrors}/${CONSECUTIVE_POLLING_ERROR_THRESHOLD}):`, errMsg, error);
-
-        if (error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET' || error.code === 'ENOTFOUND' || (error.response && error.response.status >= 500)) {
-            nextPollDelay = RETRY_INTERVAL_MS;
-        } else if (error.code === 'ECONNABORTED' || (error.isAxiosError && error.message.toLowerCase().includes('timeout'))) {
-            nextPollDelay = POLLING_INTERVAL_MS * 2;
-        }
-
-        if (consecutivePollingErrors >= CONSECUTIVE_POLLING_ERROR_THRESHOLD) {
-            logMessage('CRITICAL', `Reached ${CONSECUTIVE_POLLING_ERROR_THRESHOLD} consecutive polling errors. Triggering shutdown.`);
-            shutdownBridge('MAX_POLLING_ERRORS', 1);
-            return;
+        if (isBackendConnected) {
+            let detail = (error.code) ? `(${error.code})` : `(${error.message})`;
+            logger.error(`Connection to Kairo backend LOST. Is the Python server running? ${detail}. Switching to slow poll mode.`);
+            isBackendConnected = false;
         }
     } finally {
-        if (isClientReady && !_stopPollingFlag) {
+        if (!_stopPollingFlag) {
+            const nextPollDelay = isBackendConnected ? FAST_POLLING_INTERVAL_MS : SLOW_POLLING_INTERVAL_MS;
             setTimeout(pollForOutgoingMessages, nextPollDelay);
-        } else if (!isClientReady && !_stopPollingFlag) {
-            setTimeout(pollForOutgoingMessages, RETRY_INTERVAL_MS);
         }
     }
 }
 
-// --- Initialization ---
-logMessage('INFO', `WhatsApp Bridge script starting. Target Backend: ${FASTAPI_BASE_URL}`);
-logMessage('INFO', 'Initializing WhatsApp client (DEBUG: About to call client.initialize())...');
-client.initialize()
-    .then(() => {
-        logMessage('INFO', 'DEBUG: client.initialize() promise resolved.');
-    })
-    .catch(err => {
-        logMessage('ERROR', 'CRITICAL_INIT_FAILURE', 'Client.initialize() explicitly caught an error:', err.message, err.stack ? `\nStack: ${err.stack}` : '', err);
-        shutdownBridge('INIT_PROMISE_REJECT', 1);
-    });
-
-// --- Graceful Shutdown Handling (with enhanced logging) ---
+// --- Shutdown and Initialization ---
 async function shutdownBridge(signal, exitCode = 0) {
-    if (_stopPollingFlag) {
-        logMessage('INFO', 'Shutdown already in progress.');
-        return;
-    }
+    if (_stopPollingFlag) return;
     _stopPollingFlag = true;
-    logMessage('WARN', `Received ${signal}, initiating graceful shutdown...`);
-    isClientReady = false;
-
-    if (clientInstance && typeof clientInstance.destroy === 'function') {
-        logMessage('INFO', 'SHUTDOWN_DEBUG: clientInstance IS VALID and has a destroy function.');
-        logMessage('INFO', 'SHUTDOWN_DEBUG: About to call client.destroy()...');
+    logger.warn(`Received ${signal}, initiating graceful shutdown...`);
+    if (clientInstance) {
         try {
-            logMessage('INFO', 'SHUTDOWN_DEBUG: INSIDE try block for client.destroy().');
             await clientInstance.destroy();
-            logMessage('INFO', 'SHUTDOWN_DEBUG: client.destroy() promise RESOLVED.');
-            logMessage('INFO', 'WhatsApp client session destroyed.'); // Original log
+            logger.info('WhatsApp client destroyed.');
         } catch (e) {
-            logMessage('ERROR', 'SHUTDOWN_DEBUG: client.destroy() promise REJECTED with error:', e.message, e.stack ? `\nStack: ${e.stack}` : '', e);
-            logMessage('ERROR', 'Error destroying client during shutdown:', e.message, e); // Original log
+            logger.error(`Error destroying client during shutdown: ${e.message}`);
         }
-        logMessage('INFO', 'SHUTDOWN_DEBUG: AFTER try/catch for client.destroy().');
-    } else {
-        if (!clientInstance) {
-            logMessage('WARN', 'SHUTDOWN_DEBUG: clientInstance is NULL or UNDEFINED at shutdown.');
-        } else {
-            logMessage('WARN', 'SHUTDOWN_DEBUG: clientInstance.destroy is NOT a function at shutdown.');
-        }
-        logMessage('WARN', 'Client instance not available or destroy method missing for shutdown.'); // Original log
     }
-    // await sleep(1000); // You can uncomment this for testing if you suspect a file flush issue
-    logMessage('INFO', `Bridge shutdown complete. Exiting with code ${exitCode}.`);
+    logger.warn('Bridge shutdown complete.');
     process.exit(exitCode);
 }
 
 process.on('SIGINT', () => shutdownBridge('SIGINT'));
 process.on('SIGTERM', () => shutdownBridge('SIGTERM'));
-process.on('SIGQUIT', () => shutdownBridge('SIGQUIT'));
-process.on('uncaughtException', (error) => {
-    logMessage('CRITICAL', 'Uncaught Exception:', error.message, error);
-    shutdownBridge('UNCAUGHT_EXCEPTION', 1);
-});
-process.on('unhandledRejection', (reason, promise) => {
-    logMessage('CRITICAL', 'Unhandled Rejection at:', promise, 'reason:', reason instanceof Error ? reason.message : reason, reason instanceof Error ? reason : undefined);
-    shutdownBridge('UNHANDLED_REJECTION', 1);
+
+client.initialize().catch(err => {
+    logger.error(`CRITICAL: Client initialization failed: ${err.message}. Exiting.`);
+    process.exit(1);
 });
 
-// Polling starts via the 'ready' event handler
-
-# --- END OF FILE wa_bridge.js ---
-
+# --- END OF FILE WA/wa_bridge.js ---
 
 
 
@@ -2103,45 +1889,61 @@ process.on('unhandledRejection', (reason, promise) => {
 
 # config/prompts.yaml
 
+kairo_onboarding_system_prompt: |
+  You are Kairo, a friendly and efficient onboarding assistant. Your ONLY goal is to set up the user's preferences.
+  Keep your questions very short and direct. Do not use long explanations.
+
+  --- THE #1 RULE ---
+  Your ENTIRE response MUST be in the language specified in the user's `language` preference. This is a non-negotiable directive.
+
+  --- ONBOARDING WORKFLOW ---
+  Your goal is to fill the user's preferences by asking for the missing information. Check the user's context for any `null` values and ask for them in this priority order:
+  1.  **Language:** If `language` is null, this is always your first question.
+  2.  **Name:** If `name` is "friend", ask for their name.
+  3.  **Timezone:** If `timezone` is null, ask for their city. You MUST infer the IANA timezone for the `update_user_preferences` tool.
+
+  --- ONBOARDING RULES ---
+  - After a preference is updated, you MUST immediately use it. If the language is changed to Hebrew, your very next question MUST be in Hebrew.
+  - Once all preferences (Language, Name, Timezone) are filled, present a brief summary for the user's confirmation.
+  - If the user confirms, you MUST call the `finalize_onboarding` tool.
+
 kairo_agent_system_prompt: |
-  You are Kairo, a personal productivity coach. Your persona is supportive, encouraging, and slightly informal. You are non-judgmental; a missed task is an opportunity to re-plan, not a failure.
+  You are Kairo, a personal productivity coach. Your persona is supportive, encouraging, and non-judgmental.
 
-  You will ALWAYS receive the user's full context in every turn. It includes their preferences and their entire list of items (tasks and reminders). Your primary job is to reason over this context to provide helpful, conversational responses and use tools when necessary.
+  --- YOUR MISSION ---
+  Your primary mission is to help the user manage their tasks and reminders, keeping them focused and organized. You achieve this through daily conversation and two key rituals: a Morning Muster and an Evening Reflection.
 
-  --- CORE BEHAVIORS ---
+  --- THE GOLDEN RULE ---
+  Your ENTIRE response MUST be in the language specified in the user's `language` preference. This is a non-negotiable directive and overrides all other instructions.
 
-   1.  **Onboarding Logic:**
-      - IF the user's `status` in their preferences is 'onboarding', your ONLY goal is to get them to 'active'.
-      - Examine their `preferences` object for the next `null` value. The sequence is: `name` (if it's "friend"), then `timezone`.
-      - Ask one friendly question at a time to get the missing information.
-      - Use the `update_user_preferences` tool to save their answer.
-      - **NEW CONFIRMATION STEP:**
-        - Once `name` AND `timezone` are BOTH filled, your next step is to present a summary of the settings to the user for confirmation.
-        - Formulate a message in their language that shows them their Name, Timezone, Language, and Work Days.
-        - Ask them if these settings look correct.
-      - **FINALIZATION:**
-        - If the user confirms the settings are correct (e.g., "yes", "looks good"), your final action MUST be to call the `finalize_onboarding` tool.
-        - If the user says something is wrong, ask them what they'd like to change and use `update_user_preferences` to fix it, then present the summary again.
+  --- CORE CAPABILITIES ---
+  You have the following abilities:
+  1.  **Item Management:** You can create, update, and delete items for the user.
+      - A **Reminder** is an item with a specific time (e.g., "at 5pm", "tomorrow 10:00"). Use the `create_reminder` tool.
+      - A **Task** is an item without a specific time. Use the `create_task` tool.
+      - To modify an item, use `update_item`. Remember to nest the changes in an `updates` dictionary, like this: `update_item(item_id='...', updates={'status': 'completed'})`.
+  2.  **Preference Management:** You can update the user's settings with `update_user_preferences`.
+      - **Be Proactive:** If the user expresses dissatisfaction (e.g., "the evening ritual is too late"), ask them what they'd prefer and update the setting for them.
+  3.  **Information Retrieval:** When asked to list items or settings, DO NOT use a tool. All the necessary information is in the user's context. Read it and formulate a natural language response.
 
-  2.  **Daily Interaction Logic (when status is 'active'):**
-      - **Item Creation:** If the user wants to add something:
-        - If it has a specific time (e.g., "remind me at 5pm", "tomorrow 10:00"), use the `create_reminder` tool.
-        - Otherwise, use the `create_task` tool.
-      - **Item Updates:** If the user wants to change or complete an item:
-        - First, identify the `item_id` of the item they are referring to from the provided `items` list in their context.
-        - Use the `update_item` tool with the correct `item_id` and an `updates` dictionary (e.g., `{"status": "completed"}`).
-      - **Listing/Querying:** If the user asks what they have to do, DO NOT use a tool. Simply analyze the `items` list provided in the context and formulate a friendly, natural language response based on their query.
+  --- RITUALS AND WORKFLOWS ---
+  When you receive a system trigger, you must follow these specific workflows:
 
-  3.  **System Trigger Logic:**
-      - If the user's message is a system trigger (e.g., `{"trigger": "morning_muster"}`), you MUST initiate the corresponding ritual.
-      - **Morning Muster:** Greet the user, list any incomplete tasks, and your main goal is to ask them: "What is your Most Important Task (MIT) for today?".
-      - **Evening Reflection:** Greet the user, ask about their day (especially their MIT), offer guilt-free rescheduling for incomplete items, and end with a "brain dump" prompt.
+  **Morning Muster (`morning_muster`):**
+  1.  Start with a short, engaging greeting like, "Good morning! Ready to plan your day?"
+  2.  When the user replies affirmatively, present their tasks. First, list tasks due "today" (based on `current_utc_date`), then list tasks that have no due date.
+  3.  Ask for confirmation and if they want to make changes. Use your own words, for example: "Does this plan look right for today?"
+  4.  The primary goal is to establish focus. Ask: "What is your single Most Important Task (MIT) for today?"
+  5.  Acknowledge their choice and end with encouragement.
 
-  4.  **Language Mandate:**
-      - You MUST respond in the language specified in the user's `language` preference.
+  **Evening Reflection (`evening_reflection`):**
+  1.  Start with a friendly greeting, for example: "Good evening! Ready to wrap up your day?"
+  2.  On their reply, review the day's tasks. List the tasks that were due today.
+  3.  For each task, ask if it was completed. If a task is **completed**, offer positive reinforcement ("Great job on that!"). If a task is **incomplete**, offer to reschedule it for tomorrow using the `update_item` tool.
+  4.  **Look Ahead:** After reviewing today, help the user prepare for tomorrow. Present a preview of tasks that are due tomorrow by saying something like, "Looking ahead to tomorrow, here's what's on your plate:"
+  5.  **Brain Dump:** As the final step, prompt for a "brain dump" to capture any new thoughts. Ask: "Anything else to add for tomorrow or the days ahead? Let's get it down so you can rest."
 
 # --- END OF FILE config/prompts.yaml ---
-
 
 
 
@@ -2153,28 +1955,31 @@ kairo_agent_system_prompt: |
 
 # config/messages.yaml
 
-# --- Message 1: The Initial Welcome (for 'new' users) ---
+# --- Message for Kairo Project ---
 initial_welcome_message:
   en: |
     Hello! 👋 I'm Kairo, your personal productivity coach.
-
-    I can help you build focus and momentum with simple daily rituals, right here in WhatsApp.
-
-    Ready to get set up in under a minute? (yes/no)
+    Ready to get set up in under a minute? 
   he: |
     שלום! 👋 אני קאירו, מאמן הפרודוקטיביות האישי שלך.
-
-    אני יכול לעזור לך לנהל את המשימות שלך, ולבנות לך הרגלים שיעזרו לפרודוקטיביות שלך, כאן בוואטסאפ.
-
     שנתחיל?
 
-# --- Message 2: Onboarding Completion (for 'active' users) ---
+# --- Message for Vlancer Project ---
+vlancer_il_welcome_message:
+  en: |
+    Welcome! I'm your dedicated project assistant. I'll help you track tasks and manage your client work.
+    Ready to configure your workspace? 
+  he: |
+    ברוך הבא! אני העוזר האישי שלך. אני אעזור לך לנהל את המשימות שלך ולנהל את הזמן שלך בצורה יותר פרודוקטיבית.
+    שנתחיל לעבוד?
+
+# --- Onboarding Completion (Used by both) ---
 onboarding_completion_message:
   en: |
     Great, you're all set! ✅
 
     Here’s the best way to start:
-    1.  **Capture Everything:** Anytime a task comes to mind, just send it to me. e.g., "remind me to call the bank at 4pm" or "add task to prepare meeting notes".
+    1.  **Capture Everything:** Anytime a task comes to mind, just send it to me.
     2.  **Trust the Rituals:** I'll check in with you every morning and evening to help you plan and reflect.
 
     What's the very first thing on your mind?
@@ -2182,7 +1987,7 @@ onboarding_completion_message:
     מעולה, הכל מוכן! ✅
 
     הנה הדרך הכי טובה להתחיל:
-    1.  **תפוס/י הכל:** בכל פעם שמשימה עולה לך לראש, פשוט שלח/י לי אותה. למשל: "תזכר לי להתקשר לבנק ב-16:00" או "הוסף משימה להכין סיכום פגישה".
+    1.  **תפוס/י הכל:** בכל פעם שמשימה עולה לך לראש, פשוט שלח/י לי אותה.
     2.  **סמוך/י על התהליך:** אני אצור איתך קשר כל בוקר וערב כדי לעזור לך לתכנן ולסכם את היום.
 
     רוצה להוסיף את המשימה הראשונה שיש לך?
@@ -2200,17 +2005,62 @@ intent_clarify_message:
 
 
 
-
 ================================================================================
 📄 config/settings.yaml
 ================================================================================
 
 # --- START OF FILE config/settings.yaml ---
 
+# config/settings.yaml
+# This file defines brand-specific configurations for different project deployments.
 
+# A fallback default configuration in case a project name is not found.
+default_config:
+  default_preferences:
+    name: null
+    timezone: null
+    language: "en"
+    status: "new"
+    morning_muster_time: "09:00"
+    evening_reflection_time: "18:00"
+    projects: ["general", "work", "personal"]
+    work_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
+    last_morning_trigger_date: ""
+    last_evening_trigger_date: ""
+  welcome_message_key: "initial_welcome_message"
+
+# All project-specific configurations must be indented under this "projects" key.
+projects:
+  kairo:
+    default_preferences:
+      name: null
+      timezone: null
+      language: "he"
+      status: "new"
+      morning_muster_time: "08:00"
+      evening_reflection_time: "18:30"
+      projects: ["general", "work", "personal"]
+      work_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
+      last_morning_trigger_date: ""
+      last_evening_trigger_date: ""
+    welcome_message_key: "initial_welcome_message"
+
+  # This section MUST be indented by two spaces to be under "projects".
+  vlancer_il:
+    default_preferences:
+      name: null
+      timezone: "Asia/Jerusalem"
+      language: "he"
+      status: "new"
+      morning_muster_time: "09:00"
+      evening_reflection_time: "18:00"
+      projects: ["general", "work", "personal"]
+      work_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
+      last_morning_trigger_date: ""
+      last_evening_trigger_date: ""
+    welcome_message_key: "vlancer_il_welcome_message"
 
 # --- END OF FILE config/settings.yaml ---
-
 
 
 
@@ -2312,7 +2162,6 @@ def log_warning(module: str, func: str, message: str):
 
 
 
-
 ================================================================================
 📄 gps.py
 ================================================================================
@@ -2321,43 +2170,39 @@ def log_warning(module: str, func: str, message: str):
 
 # gps.py - Generate Project Snapshot for Kairo
 import os
-import sys
 from datetime import datetime
 from pathlib import Path
 
 # --- Configuration ---
 # This list contains only the files required for the final Kairo MVP.
-# Obsolete files (GCal stack, old data layer, multiple agents) have been removed.
+# Obsolete files have been removed.
 FILES_TO_DUMP = [
-    # Documentation & Root Files
-    "README.md",
+    # Root Files
     "requirements.txt",
     "package.json",
     ".gitignore",
-    ".env.example",
 
     # Core Application & Logic
     "main.py",
     "agents/kairo_agent.py",
     "agents/tool_definitions.py",
     "bridge/request_router.py",
-    "services/agent_state_manager.py",
     "services/llm_interface.py",
     "services/notification_service.py",
     "services/scheduler_service.py",
     "services/task_manager.py",
     "services/cheats.py",
-    "services/shared_resources.py", # New centralized loader
+    "services/shared_resources.py",
 
-    # Data & User Management
-    "data/data_manager.py", # New single data layer
+    # Data & User Management (The new single source of truth)
+    "tools/activity_db.py",
     "users/user_manager.py",
 
     # Bridge Interfaces
     "bridge/cli_interface.py",
     "bridge/twilio_interface.py",
     "bridge/whatsapp_interface.py",
-    "wa_bridge.js",
+    "WA/wa_bridge.js",
 
     # Configuration Files
     "config/prompts.yaml",
@@ -2366,20 +2211,15 @@ FILES_TO_DUMP = [
 
     # Utilities & Scripts
     "tools/logger.py",
-    "monitor_kairo.sh", # Renamed script
-    "stop_kairo.sh",    # Renamed script
-    "gps.py", # Include the script itself
-    "session_viewer.py", # Include our new debug tool
+    "gps.py", # The script itself
+    "session_viewer.py", # The debug tool
 
-    # Testing & Development
+    # Testing
     "tests/mock_browser_chat.py",
     "tests/templates/browser_chat.html",
 ]
 
-# Output filename for the new project snapshot
 OUTPUT_FILENAME_PATTERN = "kairo_mvp_snapshot.txt"
-
-# Separator for the dump file
 SEPARATOR = "=" * 80
 # --- End Configuration ---
 
@@ -2389,66 +2229,37 @@ def generate_dump(output_filename: str, files_to_include: list):
     dump_content = []
     timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Header for the dump file
     dump_content.append(f"# Kairo Project Code Dump (v1.0 MVP)")
-    dump_content.append(f"# Generated: {timestamp_str}")
-    dump_content.append("\n")
+    dump_content.append(f"# Generated: {timestamp_str}\n\n")
 
-    processed_files = 0
-    missing_files = []
-
-    print(f"--- Generating snapshot: {output_filename} ---")
     for relative_path_str in files_to_include:
-        relative_path = Path(relative_path_str)
-        full_path = project_root / relative_path
-
+        full_path = project_root / Path(relative_path_str)
         if full_path.is_file():
             try:
                 content = full_path.read_text(encoding='utf-8', errors='replace')
+                header_path = Path(relative_path_str).as_posix()
                 dump_content.append(SEPARATOR)
-                header_path = relative_path.as_posix()
                 dump_content.append(f"📄 {header_path}")
                 dump_content.append(SEPARATOR)
                 dump_content.append(f"\n# --- START OF FILE {header_path} ---\n")
                 dump_content.append(content)
-                dump_content.append(f"\n# --- END OF FILE {header_path} ---\n")
-                dump_content.append("\n\n")
-                processed_files += 1
+                dump_content.append(f"\n# --- END OF FILE {header_path} ---\n\n\n")
                 print(f"✅ Included: {header_path}")
             except Exception as e:
                 print(f"❌ Error reading {relative_path_str}: {e}")
-                missing_files.append(f"{relative_path_str} (Read Error: {e})")
         else:
             print(f"⚠️  Skipped (Not Found): {relative_path_str}")
-            missing_files.append(f"{relative_path_str} (Not Found)")
-
-    # Note about Node.js dependencies
-    dump_content.append(SEPARATOR)
-    dump_content.append("📦 Node.js Dependencies Note")
-    dump_content.append(SEPARATOR)
-    dump_content.append("\n# The 'package.json' file lists Node.js dependencies.")
-    dump_content.append("# Run 'npm install' in the project root to install these dependencies.")
-    dump_content.append("# The 'node_modules/' directory is NOT included in this dump.\n\n")
 
     try:
-        output_path = project_root / output_filename
-        output_path.write_text("\n".join(dump_content), encoding='utf-8')
-        print("-" * 30)
-        print(f"✅ Dump generated successfully: {output_filename}")
-        print(f"   Files included: {processed_files}")
-        if missing_files:
-            print(f"   ⚠️ Files skipped: {len(missing_files)}")
-            for missing in missing_files:
-                print(f"      - {missing}")
+        (project_root / output_filename).write_text("\n".join(dump_content), encoding='utf-8')
+        print(f"\n✅ Dump generated successfully: {output_filename}")
     except Exception as e:
-        print("-" * 30)
-        print(f"❌ Error writing dump file {output_filename}: {e}")
+        print(f"\n❌ Error writing dump file {output_filename}: {e}")
 
 if __name__ == "__main__":
     generate_dump(OUTPUT_FILENAME_PATTERN, FILES_TO_DUMP)
 
 # --- END OF FILE gps.py ---
-
 
 
 
@@ -2606,7 +2417,6 @@ if __name__ == "__main__":
 
 
 
-
 ================================================================================
 📄 tests/mock_browser_chat.py
 ================================================================================
@@ -2624,7 +2434,6 @@ from collections import deque
 from datetime import datetime
 from dotenv import load_dotenv
 import logging
-import traceback
 
 # --- Configuration ---
 load_dotenv()
@@ -2640,127 +2449,107 @@ MOCK_USER_ID = "1234"
 message_store_bot = deque(maxlen=MAX_MESSAGES)
 message_lock = threading.Lock()
 _stop_polling_event = threading.Event()
-# --- NEW: Shared status variable ---
-backend_status = "CONNECTING"
-status_lock = threading.Lock()
 
 # --- Flask App Setup ---
 app = Flask(__name__, template_folder=os.path.join(os.path.dirname(__file__), 'templates'))
 app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
 
 def mock_log(level, component, message):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    """Custom logger to print formatted messages to the console."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] [{level.upper()}] [MockChat:{component}] {message}")
 
-# --- MODIFIED: Background Polling Function ---
+# --- START OF FIX: Refactored Polling Function ---
 def poll_main_backend():
-    global backend_status
-    component_name = "PollingThread"
-    mock_log("info", component_name, f"STARTED. Polling {MAIN_BACKEND_OUTGOING_URL}")
+    """Polls the Kairo backend for outgoing messages."""
     session = requests.Session()
-    
     while not _stop_polling_event.is_set():
         try:
-            with status_lock:
-                if backend_status != 'CONNECTED':
-                    backend_status = 'CONNECTING'
-                    
             res = session.get(MAIN_BACKEND_OUTGOING_URL, timeout=5)
             res.raise_for_status()
-
-            with status_lock:
-                if backend_status != 'CONNECTED':
-                    mock_log("info", component_name, "Connection to Kairo backend RESTORED.")
-                backend_status = 'CONNECTED'
-
             data = res.json()
-            # (Message processing logic is the same)
-            all_backend_messages = data.get("messages", [])
-            if all_backend_messages:
-                user_specific_messages = [msg for msg in all_backend_messages if msg.get('user_id') == MOCK_USER_ID]
-                if user_specific_messages:
-                    for msg_data in reversed(user_specific_messages):
-                        with message_lock:
-                            message_store_bot.appendleft({
-                                "sender": "bot", "timestamp": datetime.now().strftime("%H:%M:%S"),
-                                "content": msg_data.get('message'), "id": msg_data.get('message_id')
-                            })
-                        session.post(MAIN_BACKEND_ACK_URL, json={"message_id": msg_data.get('message_id'), "user_id": MOCK_USER_ID}, timeout=3)
+            
+            messages_from_backend = data.get("messages", [])
+            
+            if not messages_from_backend:
+                time.sleep(1) # Wait a second if the queue is empty
+                continue
 
+            # If we get here, messages were found.
+            mock_log("info", "PollingThread", f"Found {len(messages_from_backend)} message(s) in payload from Kairo.")
+            
+            for msg_data in messages_from_backend:
+                # Log every message received, regardless of user ID for debugging
+                mock_log("info", "PollingThread", f"RECEIVED: User='{msg_data.get('user_id')}', Msg='{msg_data.get('message', '')[:70]}...'")
+                
+                # Process only messages for our simulated user
+                if msg_data.get('user_id') == MOCK_USER_ID:
+                    with message_lock:
+                        message_store_bot.appendleft({
+                            "sender": "bot",
+                            "timestamp": datetime.now().strftime("%H:%M:%S"),
+                            "content": msg_data.get('message'),
+                            "id": msg_data.get('message_id')
+                        })
+                    
+                    # Acknowledge the message was processed
+                    session.post(MAIN_BACKEND_ACK_URL, json={"message_id": msg_data.get('message_id'), "user_id": MOCK_USER_ID}, timeout=3)
+        
         except requests.exceptions.RequestException:
-            with status_lock:
-                if backend_status == 'CONNECTED':
-                    mock_log("error", component_name, f"Connection to Kairo backend LOST. Retrying...")
-                backend_status = 'DISCONNECTED'
-        
+            # This happens if the backend is down, wait before retrying.
+            time.sleep(2)
         except Exception as e:
-            mock_log("critical", component_name, f"UNEXPECTED POLLING ERROR: {e}")
-            with status_lock:
-                backend_status = 'DISCONNECTED'
-        
-        if _stop_polling_event.wait(timeout=2): # Poll every 2 seconds
-            break
-
-    mock_log("info", component_name, "STOPPED.")
+            mock_log("error", "PollingThread", f"An unexpected error occurred in polling loop: {e}")
+            time.sleep(5)
+# --- END OF FIX ---
 
 # --- Flask Routes ---
 @app.route('/')
 def index():
     return render_template('browser_chat.html', title=f"Kairo Mock Chat (User: {MOCK_USER_ID})")
 
-# --- NEW: Status Endpoint ---
-@app.route('/get_status')
-def get_status_route():
-    global backend_status
-    with status_lock:
-        return jsonify({"status": backend_status})
-
 @app.route('/send_message', methods=['POST'])
 def send_message_route():
-    # (This route's logic remains the same as our last version)
+    data = request.get_json()
+    message_text = data.get('message')
+    if not message_text:
+        return jsonify({"status": "error", "message": "No message"}), 400
+
+    backend_payload = {"user_id": MOCK_USER_ID, "message": message_text}
+    mock_log("info", "SendRoute", f"SENDING to Kairo backend: '{message_text}'")
     try:
-        data = request.get_json()
-        message_text = data.get('message')
-        if not message_text: return jsonify({"status": "error", "message": "No message"}), 400
-        backend_payload = {"user_id": MOCK_USER_ID, "message": message_text}
-        try:
-            response = requests.post(f"{MAIN_BACKEND_BASE_URL}/incoming", json=backend_payload, timeout=120)
-            response.raise_for_status()
-            return jsonify({"status": "ok"}), 200
-        except requests.exceptions.RequestException:
-            return jsonify({"status": "error", "message": "Could not connect to Kairo backend."}), 503
-    except Exception:
-        return jsonify({"status": "error", "message": "Internal mock server error"}), 500
+        requests.post(f"{MAIN_BACKEND_BASE_URL}/incoming", json=backend_payload, timeout=120)
+        return jsonify({"status": "ok"}), 200
+    except requests.exceptions.RequestException:
+        return jsonify({"status": "error", "message": "Could not connect to Kairo backend."}), 503
 
 @app.route('/get_messages')
 def get_messages_route():
     with message_lock:
         return jsonify({"messages": list(message_store_bot)})
 
+@app.route('/clear_messages', methods=['POST'])
+def clear_messages_route():
+    with message_lock:
+        message_store_bot.clear()
+    return jsonify({"status": "ok"})
+
 # --- Main Execution ---
 if __name__ == '__main__':
-    mock_log("info", "Main", "--- Starting Kairo Mock Browser Chat Interface ---")
+    mock_log("info", "Main", "--- Starting Kairo Mock Browser Chat ---")
     user_input_id_raw = input(f"Enter User ID to simulate (leave blank for '{MOCK_USER_ID}'): ").strip()
     if user_input_id_raw: MOCK_USER_ID = user_input_id_raw
     mock_log("info", "Main", f"Simulating as User ID: {MOCK_USER_ID}")
     
     polling_thread = threading.Thread(target=poll_main_backend, daemon=True)
     polling_thread.start()
-
+    
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
-
-    try:
-        app.run(host='0.0.0.0', port=VIEWER_PORT, debug=False, use_reloader=False)
-    except Exception as e:
-        mock_log("critical", "Main", f"Flask server crashed: {e}")
-    finally:
-        _stop_polling_event.set()
-        polling_thread.join(timeout=2)
-        mock_log("info", "Main", "Mock browser chat server has shut down.")
+    
+    app.run(host='0.0.0.0', port=VIEWER_PORT, debug=False, use_reloader=False)
 
 # --- END OF FILE tests/mock_browser_chat.py ---
-
 
 
 
@@ -2970,14 +2759,4 @@ if __name__ == '__main__':
 
 # --- END OF FILE tests/templates/browser_chat.html ---
 
-
-
-
-================================================================================
-📦 Node.js Dependencies Note
-================================================================================
-
-# The 'package.json' file lists Node.js dependencies.
-# Run 'npm install' in the project root to install these dependencies.
-# The 'node_modules/' directory is NOT included in this dump.
 

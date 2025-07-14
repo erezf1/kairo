@@ -1,27 +1,31 @@
 # config/messages.yaml
 
-# --- Message 1: The Initial Welcome (for 'new' users) ---
+# --- Message for Kairo Project ---
 initial_welcome_message:
   en: |
     Hello! 👋 I'm Kairo, your personal productivity coach.
-
-    I can help you build focus and momentum with simple daily rituals, right here in WhatsApp.
-
-    Ready to get set up in under a minute? (yes/no)
+    Ready to get set up in under a minute? 
   he: |
     שלום! 👋 אני קאירו, מאמן הפרודוקטיביות האישי שלך.
-
-    אני יכול לעזור לך לנהל את המשימות שלך, ולבנות לך הרגלים שיעזרו לפרודוקטיביות שלך, כאן בוואטסאפ.
-
     שנתחיל?
 
-# --- Message 2: Onboarding Completion (for 'active' users) ---
+# --- Message for Vlancer Project ---
+vlancer_il_welcome_message:
+  en: |
+    Welcome! I'm your dedicated project assistant. I'll help you track tasks and manage your client work.
+    Ready to configure your workspace? 
+  he: |
+   שלום וברוכים הבאים ל-Vlancer. 
+   נעים מאד, אני העוזרת האישית החדשה שלך.  אני יודעת כמה קשה להיות עצמאי וכמה קשה לזכור ולנהל את כל המשימות שלך, לכן חשוב לי שתרגישו שאיתי אתם יותר לא לבד! 
+   בתור העוזרת האישית שלך, אני יודעת לנהל את המשימות שלך, להזכיר לך תזכורות, לסייע ולך לעבוד בצורה פרודוקטיבית יותר. 
+   אז שנתחיל?
+# --- Onboarding Completion (Used by both) ---
 onboarding_completion_message:
   en: |
     Great, you're all set! ✅
 
     Here’s the best way to start:
-    1.  **Capture Everything:** Anytime a task comes to mind, just send it to me. e.g., "remind me to call the bank at 4pm" or "add task to prepare meeting notes".
+    1.  **Capture Everything:** Anytime a task comes to mind, just send it to me.
     2.  **Trust the Rituals:** I'll check in with you every morning and evening to help you plan and reflect.
 
     What's the very first thing on your mind?
@@ -29,7 +33,7 @@ onboarding_completion_message:
     מעולה, הכל מוכן! ✅
 
     הנה הדרך הכי טובה להתחיל:
-    1.  **תפוס/י הכל:** בכל פעם שמשימה עולה לך לראש, פשוט שלח/י לי אותה. למשל: "תזכר לי להתקשר לבנק ב-16:00" או "הוסף משימה להכין סיכום פגישה".
+    1.  **תפוס/י הכל:** בכל פעם שמשימה עולה לך לראש, פשוט שלח/י לי אותה.
     2.  **סמוך/י על התהליך:** אני אצור איתך קשר כל בוקר וערב כדי לעזור לך לתכנן ולסכם את היום.
 
     רוצה להוסיף את המשימה הראשונה שיש לך?

@@ -10,7 +10,7 @@ from tools.logger import log_info, log_error
 import users.user_manager as user_manager
 from agents.kairo_agent import handle_user_request
 from services.cheats import handle_cheat_command
-from services.shared_resources import get_message_templates, get_prompt
+from services.shared_resources import get_message_templates, get_prompt, get_welcome_message_key
 
 ERROR_TEMPLATES = get_message_templates("generic_error_message") or {}
 GENERIC_ERROR_MSG_ROUTER = ERROR_TEMPLATES.get("en", "Sorry, an error occurred.")
@@ -57,6 +57,7 @@ def send_message(user_id: str, message_body: str):
         log_error("request_router", "send_message", "Bridge not available.")
 
 def normalize_user_id(user_id_from_bridge: str) -> str:
+    """Removes non-digit characters from a user ID."""
     if not user_id_from_bridge: return ""
     return re.sub(r'\D', '', str(user_id_from_bridge))
 
@@ -70,24 +71,21 @@ def handle_incoming_message(user_id_from_bridge: str, message_text: str):
     if message_text.strip().startswith('/'):
         parts = message_text.strip().split(); command = parts[0].lower(); args = parts[1:]
         cheat_result = handle_cheat_command(norm_user_id, command, args)
-        action_type = cheat_result.get("type")
-        if action_type == "message":
+        if cheat_result.get("type") == "message":
             send_message(norm_user_id, cheat_result.get("content", "OK."))
-        elif action_type == "system_event":
+        elif cheat_result.get("type") == "system_event":
             handle_internal_system_event({"user_id": norm_user_id, "trigger_type": cheat_result.get("trigger_type")})
         return
 
     agent_state = user_manager.get_agent(norm_user_id)
-    
-    # Add the current UTC date to the agent's context to help with date logic
     agent_state['preferences']['current_utc_date'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    
     user_prefs = agent_state.get("preferences", {})
     user_status = user_prefs.get("status")
     
     if user_status == "new":
+        welcome_message_key = get_welcome_message_key()
+        welcome_templates = get_message_templates(welcome_message_key) or {}
         user_lang = user_prefs.get("language", "en")
-        welcome_templates = get_message_templates("initial_welcome_message") or {}
         send_message(norm_user_id, welcome_templates.get(user_lang, "Hello!"))
         user_manager.update_user_preferences(norm_user_id, {"status": "onboarding"})
         return
@@ -119,7 +117,6 @@ def handle_internal_system_event(event_data: Dict):
     agent_state = user_manager.get_agent(user_id)
     if not agent_state or agent_state.get("preferences", {}).get("status") != "active": return
     
-    # Also add current date for internal events
     agent_state['preferences']['current_utc_date'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
     system_prompt = get_prompt('kairo_agent_system_prompt')

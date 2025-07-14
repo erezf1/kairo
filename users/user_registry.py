@@ -10,11 +10,11 @@ USER_REGISTRY_PATH = os.path.join("data", "users", f"registry{os.getenv('DATA_SU
 _registry: Dict[str, Dict[str, Any]] = {}
 
 DEFAULT_PREFERENCES = {
-    "name": "friend",
-    "timezone": None,
-    "language": "en",
-    "morning_muster_time": "08:00",
-    "evening_reflection_time": "18:30",
+    "name": null ,
+    "timezone": null,
+    "language": null,
+    "morning_muster_time": "09:00",
+    "evening_reflection_time": "18:00",
     "status": "new",
     "projects": ["general", "work", "personal"],
     "work_days": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"],
