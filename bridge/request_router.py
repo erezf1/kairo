@@ -3,6 +3,7 @@ import re
 import os
 import json
 import threading
+import time
 from typing import Dict, Any
 
 from tools.logger import log_info, log_error, log_warning
@@ -16,8 +17,12 @@ GENERIC_ERROR_MSG_ROUTER = (get_message_templates("generic_error_message") or {}
 _bridge_instance: Any = None
 _bridge_lock = threading.Lock()
 
+# --- Idempotency Cache ---
+_processed_messages_cache: Dict[str, float] = {}
+_cache_lock = threading.Lock()
+CACHE_EXPIRATION_SECONDS = 30 
+
 def get_bridge() -> Any:
-    """Lazily initializes and returns the singleton bridge instance."""
     global _bridge_instance
     if _bridge_instance is None:
         with _bridge_lock:
@@ -45,7 +50,6 @@ def get_bridge() -> Any:
     return _bridge_instance
 
 def send_message(user_id: str, message_body: str):
-    """Sends a message to a user via the configured bridge."""
     if not user_id or not message_body: return
     user_manager.add_message_to_user_history(user_id, "assistant", "agent_text_response", content=message_body)
     bridge = get_bridge()
@@ -55,21 +59,29 @@ def send_message(user_id: str, message_body: str):
         log_error("request_router", "send_message", "Bridge not available.")
 
 def normalize_user_id(user_id_from_bridge: str) -> str:
-    """Removes non-digit characters from a user ID."""
     if not user_id_from_bridge: return ""
     return re.sub(r'\D', '', str(user_id_from_bridge))
 
-def handle_incoming_message(user_id_from_bridge: str, message_text: str):
-    """Main entry point for routing all incoming user messages."""
+def handle_incoming_message(user_id_from_bridge: str, message_text: str, message_id: str | None = None):
+    if message_id:
+        with _cache_lock:
+            current_time = time.time()
+            expired_ids = [msg_id for msg_id, ts in _processed_messages_cache.items() if current_time - ts > CACHE_EXPIRATION_SECONDS]
+            for msg_id in expired_ids:
+                del _processed_messages_cache[msg_id]
+            if message_id in _processed_messages_cache:
+                log_warning("request_router", "handle_incoming", f"Duplicate message ID received: {message_id}. Ignoring.")
+                return
+            _processed_messages_cache[message_id] = current_time
+
     norm_user_id = normalize_user_id(user_id_from_bridge)
     if not norm_user_id: return
 
     agent_state = user_manager.get_agent(norm_user_id)
     if not agent_state:
         log_error("request_router", "handle_incoming", f"CRITICAL: Failed to get/create agent state for {norm_user_id}.")
-        send_message(norm_user_id, GENERIC_ERROR_MSG_ROUTER)
         return
-    
+
     user_manager.add_message_to_user_history(norm_user_id, "user", "user_text", content=message_text)
 
     if message_text.strip().startswith('/'):
@@ -88,19 +100,13 @@ def handle_incoming_message(user_id_from_bridge: str, message_text: str):
         return
 
     try:
-        response = handle_user_request(
-            user_id=norm_user_id,
-            message=message_text,
-            full_context=agent_state
-        )
-        if response:
-            send_message(norm_user_id, response)
+        response = handle_user_request(user_id=norm_user_id, message=message_text, full_context=agent_state)
+        if response: send_message(norm_user_id, response)
     except Exception as e:
         log_error("request_router", "handle_incoming", f"Error from KairoAgent for {norm_user_id}", e)
         send_message(norm_user_id, GENERIC_ERROR_MSG_ROUTER)
 
 def handle_internal_system_event(event_data: Dict):
-    """Handles internally generated events like scheduled rituals."""
     user_id = event_data.get("user_id")
     trigger_type = event_data.get("trigger_type")
     if not user_id or not trigger_type: return
@@ -110,12 +116,7 @@ def handle_internal_system_event(event_data: Dict):
 
     try:
         trigger_as_message = json.dumps({"trigger": trigger_type})
-        response = handle_user_request(
-            user_id=user_id,
-            message=trigger_as_message,
-            full_context=agent_state
-        )
-        if response:
-            send_message(user_id, response)
+        response = handle_user_request(user_id=user_id, message=trigger_as_message, full_context=agent_state)
+        if response: send_message(user_id, response)
     except Exception as e:
         log_error("request_router", "handle_internal", f"Error routing internal event '{trigger_type}' for {user_id}", e)
