@@ -6,15 +6,16 @@ import threading
 from typing import Dict, Any
 from datetime import datetime, timezone
 
-from tools.logger import log_info, log_error
+from tools.logger import log_info, log_error, log_warning
+# We now import the entire user_manager, as it's our primary data interface
 import users.user_manager as user_manager
 from agents.kairo_agent import handle_user_request
 from services.cheats import handle_cheat_command
-from services.shared_resources import get_message_templates, get_prompt, get_welcome_message_key
+# We'll assume a shared_resources module for loading prompts/messages
+from services.shared_resources import get_message_templates, get_prompt
 
-ERROR_TEMPLATES = get_message_templates("generic_error_message") or {}
-GENERIC_ERROR_MSG_ROUTER = ERROR_TEMPLATES.get("en", "Sorry, an error occurred.")
-
+# --- Setup ---
+GENERIC_ERROR_MSG_ROUTER = (get_message_templates("generic_error_message") or {}).get("en", "Sorry, an error occurred.")
 _bridge_instance: Any = None
 _bridge_lock = threading.Lock()
 
@@ -66,8 +67,17 @@ def handle_incoming_message(user_id_from_bridge: str, message_text: str):
     norm_user_id = normalize_user_id(user_id_from_bridge)
     if not norm_user_id: return
 
+    # get_agent will create a new user if one doesn't exist.
+    agent_state = user_manager.get_agent(norm_user_id)
+    if not agent_state:
+        log_error("request_router", "handle_incoming", f"CRITICAL: Failed to get or create agent state for {norm_user_id}.")
+        send_message(norm_user_id, GENERIC_ERROR_MSG_ROUTER)
+        return
+    
+    # Add user message to history AFTER ensuring the user exists.
     user_manager.add_message_to_user_history(norm_user_id, "user", "user_text", content=message_text)
 
+    # Handle Cheat Codes
     if message_text.strip().startswith('/'):
         parts = message_text.strip().split(); command = parts[0].lower(); args = parts[1:]
         cheat_result = handle_cheat_command(norm_user_id, command, args)
@@ -77,30 +87,23 @@ def handle_incoming_message(user_id_from_bridge: str, message_text: str):
             handle_internal_system_event({"user_id": norm_user_id, "trigger_type": cheat_result.get("trigger_type")})
         return
 
-    agent_state = user_manager.get_agent(norm_user_id)
-    agent_state['preferences']['current_utc_date'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    user_prefs = agent_state.get("preferences", {})
-    user_status = user_prefs.get("status")
-    
-    if user_status == "new":
-        welcome_message_key = get_welcome_message_key()
-        welcome_templates = get_message_templates(welcome_message_key) or {}
-        user_lang = user_prefs.get("language", "en")
-        send_message(norm_user_id, welcome_templates.get(user_lang, "Hello!"))
+    # Handle "new" user status as a special case before calling the agent
+    if agent_state.get("preferences", {}).get("status") == "new":
+        welcome_templates = get_message_templates("welcome_message") or {}
+        user_lang = agent_state.get("preferences", {}).get("language", "en")
+        send_message(norm_user_id, welcome_templates.get(user_lang, "Hello! Let's get started."))
+        # Transition user to onboarding state
         user_manager.update_user_preferences(norm_user_id, {"status": "onboarding"})
         return
 
-    prompt_key = 'kairo_onboarding_system_prompt' if user_status == 'onboarding' else 'kairo_agent_system_prompt'
-    system_prompt = get_prompt(prompt_key)
-
-    if not system_prompt:
-        log_error("request_router", "handle_incoming", f"Could not load system prompt for status '{user_status}'.")
-        send_message(norm_user_id, GENERIC_ERROR_MSG_ROUTER)
-        return
-
+    # For all other statuses, call the main Kairo agent
     try:
+        # --- THIS IS THE CORRECTED CALL ---
+        # The agent now gets its prompt internally based on the context.
         response = handle_user_request(
-            user_id=norm_user_id, message=message_text, full_context=agent_state, system_prompt=system_prompt
+            user_id=norm_user_id,
+            message=message_text,
+            full_context=agent_state
         )
         if response:
             send_message(norm_user_id, response)
@@ -116,18 +119,14 @@ def handle_internal_system_event(event_data: Dict):
 
     agent_state = user_manager.get_agent(user_id)
     if not agent_state or agent_state.get("preferences", {}).get("status") != "active": return
-    
-    agent_state['preferences']['current_utc_date'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-
-    system_prompt = get_prompt('kairo_agent_system_prompt')
-    if not system_prompt:
-        log_error("request_router", "handle_internal", "Could not load main system prompt for internal event.")
-        return
 
     try:
         trigger_as_message = json.dumps({"trigger": trigger_type})
+        # --- THIS IS ALSO CORRECTED ---
         response = handle_user_request(
-            user_id=user_id, message=trigger_as_message, full_context=agent_state, system_prompt=system_prompt
+            user_id=user_id,
+            message=trigger_as_message, # Pass the trigger as the "message"
+            full_context=agent_state
         )
         if response:
             send_message(user_id, response)
