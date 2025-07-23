@@ -14,8 +14,6 @@ const MAX_SEND_RETRIES = 3;
 const SEND_RETRY_DELAY_MS = 2000;
 const MAX_ACK_RETRIES = 3;
 const ACK_RETRY_DELAY_MS = 3000;
-const FAILED_ACK_QUARANTINE_CLEAR_MS = 3600000; // 1 hour
-const RESTART_INTERVAL_MS = 21600000; // Periodically restart every 6 hours
 
 // --- Winston Logger ---
 const logger = winston.createLogger({
@@ -35,23 +33,8 @@ const logger = winston.createLogger({
 let isClientReady = false;
 let clientInstance;
 let _stopPollingFlag = false;
-const failedAckStore = new Set();
-let isBackendConnected = true; // Assume backend is up at the start
-
-// Periodically clear the ACK quarantine to give messages another chance
-setInterval(() => {
-    if (failedAckStore.size > 0) {
-        logger.info(`Clearing ACK failure quarantine. ${failedAckStore.size} items are now retryable.`);
-        failedAckStore.clear();
-    }
-}, FAILED_ACK_QUARANTINE_CLEAR_MS);
-
-// Periodically restart the script for long-term stability
-setTimeout(() => {
-    logger.warn('Initiating scheduled periodic restart for stability.');
-    shutdownBridge('PERIODIC_RESTART');
-}, RESTART_INTERVAL_MS);
-
+let isBackendConnected = true;
+const processedMessageIDs = new Set(); // In-memory set to prevent double-sends in a session
 
 // --- Utility: Sleep Function ---
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -89,12 +72,16 @@ client.on('message', async (message) => {
     const chat = await message.getChat();
     if (message.isStatus || chat.isGroup) return; // Ignore status updates and group chats
 
-    logger.info(`Received message from ${message.from}: "${message.body.substring(0, 50)}..."`);
+    logger.info(`Received message from ${message.from}: "${message.body.substring(0, 50)}..." (ID: ${message.id._serialized})`);
     try {
+        // --- THIS IS THE FIX ---
+        // Include the unique message ID in the payload to the backend.
         await axios.post(`${FASTAPI_BASE_URL}/incoming`, {
             user_id: message.from,
-            message: message.body
+            message: message.body,
+            message_id: message.id._serialized // Pass the unique ID
         }, { timeout: 10000 });
+        // --- END OF FIX ---
     } catch (error) {
         logger.error(`Failed to send incoming message to backend: ${error.message}`);
     }
@@ -104,13 +91,12 @@ client.on('message', async (message) => {
 async function pollForOutgoingMessages() {
     if (_stopPollingFlag) return;
     if (!isClientReady) {
-        setTimeout(pollForOutgoingMessages, 5000); // Wait if client isn't ready
+        setTimeout(pollForOutgoingMessages, 5000);
         return;
     }
 
     try {
         const response = await axios.get(`${FASTAPI_BASE_URL}/outgoing`, { timeout: 5000 });
-        
         if (!isBackendConnected) {
             logger.info('Connection to Kairo backend RESTORED. Resuming normal polling.');
             isBackendConnected = true;
@@ -119,7 +105,8 @@ async function pollForOutgoingMessages() {
         const messages = response.data.messages;
         if (messages && messages.length > 0) {
             for (const msg of messages) {
-                if (failedAckStore.has(msg.message_id)) continue;
+                if (processedMessageIDs.has(msg.message_id)) continue;
+                processedMessageIDs.add(msg.message_id);
 
                 let sentSuccessfully = false;
                 for (let attempt = 1; attempt <= MAX_SEND_RETRIES; attempt++) {
@@ -146,18 +133,18 @@ async function pollForOutgoingMessages() {
                             if (ackAttempt < MAX_ACK_RETRIES) await sleep(ACK_RETRY_DELAY_MS);
                         }
                     }
-
                     if (!ackSentSuccessfully) {
-                        logger.error(`All ACK attempts failed for message ID: ${msg.message_id}. Quarantining.`);
-                        failedAckStore.add(msg.message_id);
+                        logger.error(`All ACK attempts failed for message ID: ${msg.message_id}. It will be retried later.`);
+                        processedMessageIDs.delete(msg.message_id);
                     }
+                } else {
+                    processedMessageIDs.delete(msg.message_id);
                 }
             }
         }
     } catch (error) {
         if (isBackendConnected) {
-            let detail = (error.code) ? `(${error.code})` : `(${error.message})`;
-            logger.error(`Connection to Kairo backend LOST. Is the Python server running? ${detail}. Switching to slow poll mode.`);
+            logger.error(`Connection to Kairo backend LOST. Switching to slow poll mode.`);
             isBackendConnected = false;
         }
     } finally {
@@ -174,12 +161,8 @@ async function shutdownBridge(signal, exitCode = 0) {
     _stopPollingFlag = true;
     logger.warn(`Received ${signal}, initiating graceful shutdown...`);
     if (clientInstance) {
-        try {
-            await clientInstance.destroy();
-            logger.info('WhatsApp client destroyed.');
-        } catch (e) {
-            logger.error(`Error destroying client during shutdown: ${e.message}`);
-        }
+        try { await clientInstance.destroy(); logger.info('WhatsApp client destroyed.'); }
+        catch (e) { logger.error(`Error destroying client: ${e.message}`); }
     }
     logger.warn('Bridge shutdown complete.');
     process.exit(exitCode);

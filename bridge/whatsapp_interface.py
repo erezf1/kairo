@@ -7,9 +7,7 @@ import json
 import re
 
 from tools.logger import log_info, log_error, log_warning
-# --- START OF FIX: Removed 'set_bridge' from the import ---
 from bridge.request_router import handle_incoming_message
-# --- END OF FIX ---
 
 try:
     from tools.calendar_tool import router as calendar_router
@@ -39,12 +37,14 @@ class WhatsAppBridge:
             self.message_queue.append(outgoing)
         log_info("WhatsAppBridge", "send_message", f"Message queued for {formatted_user_id}. Queue size: {len(self.message_queue)}")
 
-async def process_incoming_message_background(user_id: str, message: str):
-    """Runs the message handler in the background."""
+# --- START OF FIX: Pass message_id to the handler ---
+async def process_incoming_message_background(user_id: str, message: str, message_id: str | None):
+    """Runs the message handler in the background, passing the unique message_id."""
     try:
-        handle_incoming_message(user_id, message)
+        handle_incoming_message(user_id, message, message_id)
     except Exception as e:
         log_error("whatsapp_interface", "background_task", f"Exception in background processing for {user_id}", e)
+# --- END OF FIX ---
 
 def create_whatsapp_app() -> FastAPI:
     app = FastAPI(title="Kairo WhatsApp Bridge API", version="1.0.0")
@@ -54,10 +54,19 @@ def create_whatsapp_app() -> FastAPI:
     @app.post("/incoming", tags=["WhatsApp Bridge"])
     async def incoming_whatsapp_message(request: Request, background_tasks: BackgroundTasks):
         data = await request.json()
-        user_id, message_body = data.get("user_id"), data.get("message")
+        user_id = data.get("user_id")
+        message_body = data.get("message")
+        # --- START OF FIX: Get message_id from the payload ---
+        message_id = data.get("message_id") # This can be None if the bridge is old
+        # --- END OF FIX ---
+
         if not user_id or message_body is None:
             raise HTTPException(status_code=400, detail="Missing user_id or message")
-        background_tasks.add_task(process_incoming_message_background, user_id, str(message_body))
+        
+        # --- START OF FIX: Pass message_id to the background task ---
+        background_tasks.add_task(process_incoming_message_background, user_id, str(message_body), message_id)
+        # --- END OF FIX ---
+
         log_info("whatsapp_interface", "incoming", f"ACK for incoming from {user_id}. Processing in background.")
         return JSONResponse(content={"ack": True})
 

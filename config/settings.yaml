@@ -1,48 +1,45 @@
 # config/settings.yaml
 # This file defines brand-specific configurations for different project deployments.
 
-# A fallback default configuration in case a project name is not found.
 default_config:
   default_preferences:
-    name: null
+    name: null # This ensures the onboarding flow is always triggered for the name.
     timezone: null
     language: null
     status: "new"
     morning_muster_time: "09:00"
     evening_reflection_time: "18:00"
     projects: ["general", "work", "personal"]
-    work_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
+    ritual_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"] # Renamed from work_days
     last_morning_trigger_date: ""
     last_evening_trigger_date: ""
   welcome_message_key: "initial_welcome_message"
 
-# All project-specific configurations must be indented under this "projects" key.
 projects:
   kairo:
     default_preferences:
-      name: null
+      name: null # This ensures the onboarding flow is always triggered for the name.
       timezone: null
       language: "he"
       status: "new"
       morning_muster_time: "09:00"
       evening_reflection_time: "18:00"
       projects: ["general", "work", "personal"]
-      work_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
+      ritual_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"] # Renamed from work_days
       last_morning_trigger_date: ""
       last_evening_trigger_date: ""
     welcome_message_key: "initial_welcome_message"
 
-  # This section MUST be indented by two spaces to be under "projects".
   vlancer_il:
     default_preferences:
-      name: null
+      name: null # This ensures the onboarding flow is always triggered for the name.
       timezone: "Asia/Jerusalem"
       language: "he"
       status: "new"
       morning_muster_time: "09:00"
       evening_reflection_time: "18:00"
       projects: ["general", "work", "personal"]
-      work_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
+      ritual_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"] # Renamed from work_days
       last_morning_trigger_date: ""
       last_evening_trigger_date: ""
     welcome_message_key: "vlancer_il_welcome_message"

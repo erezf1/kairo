@@ -5,10 +5,9 @@ from twilio.request_validator import RequestValidator
 from twilio.rest import Client as TwilioClient
 import os
 
-from tools.logger import log_info, log_error, log_warning
-# --- START OF FIX: Removed 'set_bridge' from the import ---
+from tools.logger import log_info, log_error
+# --- THIS IS THE FIX: 'set_bridge' is removed ---
 from bridge.request_router import handle_incoming_message
-# --- END OF FIX ---
 
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else None
