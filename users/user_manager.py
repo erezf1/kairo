@@ -43,7 +43,16 @@ def get_agent(user_id: str) -> Dict[str, Any]:
             log_info("user_manager", "get_agent", f"Creating new user preferences for {user_id}")
             _user_prefs_store[user_id] = get_default_preferences()
             _save_user_preferences()
-        preferences = _user_prefs_store.get(user_id, get_default_preferences())
+        
+        # --- START OF CHANGE: Gracefully handle new preference fields for existing users ---
+        # Get the full template of what preferences SHOULD look like
+        defaults = get_default_preferences()
+        # Get the user's currently saved preferences (which might be missing new keys)
+        saved_prefs = _user_prefs_store.get(user_id, {})
+        # Merge them: user's saved values override the defaults, but new default keys are included.
+        # This is a read-only operation for this request; it does not save back to the file here.
+        preferences = {**defaults, **saved_prefs}
+        # --- END OF CHANGE ---
 
     # --- START OF FIX: Handle 'work_days' to 'ritual_days' migration ---
     if "ritual_days" not in preferences and "work_days" in preferences:
@@ -69,13 +78,16 @@ def add_message_to_user_history(user_id: str, role: str, message_type: str, cont
 
 def update_user_preferences(user_id: str, updates: Dict) -> bool:
     with _prefs_lock:
-        if user_id not in _user_prefs_store: _user_prefs_store[user_id] = get_default_preferences()
+        if user_id not in _user_prefs_store:
+            # If user somehow doesn't exist, create them from full defaults
+            _user_prefs_store[user_id] = get_default_preferences()
         
         # --- START OF FIX: Handle 'work_days' to 'ritual_days' migration during update ---
         if "work_days" in updates:
             updates["ritual_days"] = updates.pop("work_days")
         # --- END OF FIX ---
         
+        # Update the in-memory store and then save the complete file
         _user_prefs_store[user_id].update(updates)
         _save_user_preferences()
     return True

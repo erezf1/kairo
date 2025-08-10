@@ -3,14 +3,18 @@
 
 default_config:
   default_preferences:
-    name: null # This ensures the onboarding flow is always triggered for the name.
+    name: null
     timezone: null
     language: null
     status: "new"
-    morning_muster_time: "09:00"
-    evening_reflection_time: "18:00"
+    # --- START OF CHANGE: Added new fields and standardized keys ---
+    persona: null                 # e.g., 'supportive', 'concise'. Not used in onboarding for now.
+    pronoun_type: null            # e.g., 'male', 'female', 'neutral'
+    morning_ritual_time: "09:00"  # Standardized key
+    evening_ritual_time: "18:00"  # Standardized key
+    # --- END OF CHANGE ---
     projects: ["general", "work", "personal"]
-    ritual_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"] # Renamed from work_days
+    ritual_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
     last_morning_trigger_date: ""
     last_evening_trigger_date: ""
   welcome_message_key: "initial_welcome_message"
@@ -18,28 +22,36 @@ default_config:
 projects:
   kairo:
     default_preferences:
-      name: null # This ensures the onboarding flow is always triggered for the name.
+      name: null
       timezone: null
       language: "he"
       status: "new"
-      morning_muster_time: "09:00"
-      evening_reflection_time: "18:00"
+      # --- START OF CHANGE: Added new fields and standardized keys ---
+      persona: null
+      pronoun_type: null
+      morning_ritual_time: "09:00"
+      evening_ritual_time: "18:00"
+      # --- END OF CHANGE ---
       projects: ["general", "work", "personal"]
-      ritual_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"] # Renamed from work_days
+      ritual_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
       last_morning_trigger_date: ""
       last_evening_trigger_date: ""
     welcome_message_key: "initial_welcome_message"
 
   vlancer_il:
     default_preferences:
-      name: null # This ensures the onboarding flow is always triggered for the name.
+      name: null
       timezone: "Asia/Jerusalem"
       language: "he"
       status: "new"
-      morning_muster_time: "09:00"
-      evening_reflection_time: "18:00"
+      # --- START OF CHANGE: Added new fields and standardized keys ---
+      persona: null
+      pronoun_type: null
+      morning_ritual_time: "09:00"
+      evening_ritual_time: "18:00"
+      # --- END OF CHANGE ---
       projects: ["general", "work", "personal"]
-      ritual_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"] # Renamed from work_days
+      ritual_days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
       last_morning_trigger_date: ""
       last_evening_trigger_date: ""
     welcome_message_key: "vlancer_il_welcome_message"

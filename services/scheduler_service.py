@@ -21,10 +21,10 @@ def _check_and_trigger_routines():
         if prefs.get("status") != "active" or not prefs.get("timezone"):
             continue
         try:
-            # --- START OF FIX: Handle 'work_days' and check for null times ---
+            # --- START OF CHANGE: Use new preference keys ---
             ritual_days = prefs.get("ritual_days", prefs.get("work_days", [])) # Backward compatibility
-            morning_time = prefs.get("morning_muster_time")
-            evening_time = prefs.get("evening_reflection_time")
+            morning_time = prefs.get("morning_ritual_time")
+            evening_time = prefs.get("evening_ritual_time")
 
             user_tz = pytz.timezone(prefs["timezone"])
             now_local = datetime.now(user_tz)
@@ -42,7 +42,7 @@ def _check_and_trigger_routines():
             if evening_time and current_local_hm == evening_time and prefs.get("last_evening_trigger_date") != today_str:
                 handle_internal_system_event({"user_id": user_id, "trigger_type": "evening_reflection"})
                 user_manager.update_user_preferences(user_id, {"last_evening_trigger_date": today_str})
-            # --- END OF FIX ---
+            # --- END OF CHANGE ---
         except Exception as e:
             log_error("scheduler_service", "_check_routines", f"Error processing routines for user {user_id}", e)
 

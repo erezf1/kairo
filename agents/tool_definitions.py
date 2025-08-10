@@ -1,6 +1,6 @@
 # agents/tool_definitions.py
 from pydantic import BaseModel, Field
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 # The tools now interact with our high-level service managers
 import services.task_manager as kairo_core
@@ -26,16 +26,20 @@ class CreateReminderParams(BaseModel):
 class UpdateItemParams(BaseModel):
     """A tool to update one or more properties of an existing task or reminder."""
     item_id: str = Field(..., description="The unique ID of the task or reminder to update.")
-    # --- THIS IS THE FIX ---
     updates: Dict = Field(..., description="A dictionary of fields to update, e.g., {'description': 'new text', 'status': 'completed', 'status': 'deleted'}.")
-    # --- END OF FIX ---
 
 class UpdateUserPreferencesParams(BaseModel):
-    """A tool to update the user's core preferences like name or timezone."""
+    """A tool to update the user's core preferences like name, timezone, or ritual settings."""
+    # --- START OF CHANGE: Added new fields for onboarding ---
     name: Optional[str] = Field(None, description="The user's preferred name.")
     timezone: Optional[str] = Field(None, description="The user's timezone, e.g., 'America/New_York'.")
-    language: Optional[str] = Field(None, description="The user's language, 'en' or 'he'.")
-    work_days: Optional[list[str]] = Field(None, description="A list of the user's working days, e.g., ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']")
+    language: Optional[str] = Field(None, description="The user's language preference, 'en' for English or 'he' for Hebrew.")
+    pronoun_type: Optional[str] = Field(None, description="How the user should be addressed, e.g., 'male', 'female', 'neutral'.")
+    persona: Optional[str] = Field(None, description="The desired personality for the assistant. Not currently used in onboarding.")
+    morning_ritual_time: Optional[str] = Field(None, description="The user's preferred time for the morning ritual, in HH:MM format (e.g., '08:30').")
+    evening_ritual_time: Optional[str] = Field(None, description="The user's preferred time for the evening ritual, in HH:MM format (e.g., '20:00').")
+    ritual_days: Optional[List[str]] = Field(None, description="A list of the user's working days, e.g., ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']")
+    # --- END OF CHANGE ---
 
 class FinalizeOnboardingParams(BaseModel):
     """

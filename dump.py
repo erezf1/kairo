@@ -19,7 +19,7 @@ ALWAYS_EXCLUDE_DIRS = {
     'node_modules',
     '.vscode',
     '.idea',
-    'old'
+    'old',
     # --- START OF CHANGE: Added WhatsApp session folders ---
     '.wwebjs_auth',
     '.wwebjs_cache',

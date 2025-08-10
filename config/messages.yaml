@@ -4,21 +4,38 @@
 initial_welcome_message:
   en: |
     Hello! 👋 I'm Kairo, your personal productivity coach.
-    Ready to get set up in under a minute? 
+    To get started, I just need to ask a few quick questions. Ready to begin?
   he: |
     שלום! 👋 אני קאירו, מאמן הפרודוקטיביות האישי שלך.
-    שנתחיל?
+    כדי שנתחיל, אני צריך לשאול אותך כמה שאלות קצרות. מוכנ/ה?
 
 # --- Message for Vlancer Project ---
 vlancer_il_welcome_message:
   en: |
-    Welcome! I'm your dedicated project assistant. I'll help you track tasks and manage your client work.
-    Ready to configure your workspace? 
+    Welcome! I'm your dedicated project assistant.
+    To get perfectly set up, I'll guide you through a few quick questions. Shall we?
   he: |
-   שלום וברוכים הבאים ל-Vlancer. 
-   נעים מאד, אני העוזרת האישית החדשה שלך.  אני יודעת כמה קשה להיות עצמאי וכמה קשה לזכור ולנהל את כל המשימות שלך, לכן חשוב לי שתרגישו שאיתי אתם יותר לא לבד! 
-   בתור העוזרת האישית שלך, אני יודעת לנהל את המשימות שלך, להזכיר לך תזכורות, לסייע ולך לעבוד בצורה פרודוקטיבית יותר. 
-   אז שנתחיל?
+    שלום וברוכים הבאים ל-Vlancer.
+    נעים מאד, אני העוזר/ת האישי/ת שלך. כדי להתאים את עצמי אליך, אשאל אותך כמה שאלות קצרות. אפשר להתחיל?
+
+# --- START OF CHANGE: New messages for onboarding summary ---
+onboarding_summary_header:
+  en: |
+    Excellent, thank you! Here is a summary of your preferences:
+  he: |
+    מעולה, תודה! הנה סיכום ההעדפות שלך:
+
+onboarding_final_confirmation:
+  en: |
+    Does this all look correct?
+
+    You can always ask me to change any of these settings later. Just let me know if we should proceed or if you'd like to adjust anything now.
+  he: |
+    האם הכל נראה לך נכון?
+
+    אפשר תמיד לבקש ממני לשנות כל אחת מההגדרות האלה גם בעתיד. רק תגיד/י לי אם להמשיך, או אם תרצה/י לשנות משהו עכשיו.
+# --- END OF CHANGE ---
+
 # --- Onboarding Completion (Used by both) ---
 onboarding_completion_message:
   en: |
@@ -26,7 +43,7 @@ onboarding_completion_message:
 
     Here’s the best way to start:
     1.  **Capture Everything:** Anytime a task comes to mind, just send it to me.
-    2.  **Trust the Rituals:** I'll check in with you every morning and evening to help you plan and reflect.
+    2.  **Trust the Rituals:** I'll check in with you at your chosen times for our morning and evening rituals.
 
     What's the very first thing on your mind?
   he: |
@@ -34,7 +51,7 @@ onboarding_completion_message:
 
     הנה הדרך הכי טובה להתחיל:
     1.  **תפוס/י הכל:** בכל פעם שמשימה עולה לך לראש, פשוט שלח/י לי אותה.
-    2.  **סמוך/י על התהליך:** אני אצור איתך קשר כל בוקר וערב כדי לעזור לך לתכנן ולסכם את היום.
+    2.  **סמוך/י על התהליך:** אני אצור איתך קשר בזמנים שבחרת כדי לעזור לך לתכנן ולסכם את היום.
 
     רוצה להוסיף את המשימה הראשונה שיש לך?
 

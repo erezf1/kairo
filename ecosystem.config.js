@@ -5,16 +5,14 @@ module.exports = {
       name: 'Kairo-Backend',
       script: 'main.py',
       interpreter: './venv/bin/python',
-      // The backend's CWD is the project root, which is correct.
-      cwd: __dirname,
+      cwd: __dirname, // Correct: run from project root
     },
     {
       name: 'Kairo-Bridge',
-      // Provide the relative path to the script from the project root.
-      script: './wa/wa_bridge.js', 
-      // *** THIS IS THE CRITICAL CHANGE ***
-      // Set the Current Working Directory FOR THIS SCRIPT to the 'wa' folder.
-      cwd: './wa',
+      // --- THIS IS THE FIX ---
+      script: 'wa_bridge.js', // Just the script name
+      // --- END OF FIX ---
+      cwd: './WA', // Tell PM2 to run it from inside the WA directory
     },
   ],
 };
